@@ -1,6 +1,6 @@
 """FastAPI routes for the ASC platform."""
 
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Depends
 from typing import Optional
 import json
 import asyncio
@@ -8,17 +8,63 @@ import asyncio
 from app.models.schemas import (
     WorkflowRequest, WorkflowStatus, WorkflowGraph,
     CostMetrics, DeploymentStatus, MemoryEntry, MemoryType,
+    UserCreate, UserLogin, UserResponse, Token,
 )
 from app.workflow.engine import workflow_engine
 from app.memory.memory_system import memory_system
+from app.core import users as user_store
+from app.core.security import create_access_token
+from app.api.deps import get_current_user
 
 router = APIRouter(prefix="/api/v1")
+
+
+# ─── Authentication Endpoints ────────────────────────────────────────────────
+
+@router.post("/auth/register", response_model=UserResponse, status_code=201)
+async def register(payload: UserCreate):
+    """Register a new user account."""
+    if not payload.email or not payload.password:
+        raise HTTPException(status_code=422, detail="Email and password are required")
+    try:
+        user = await user_store.create_user(
+            email=payload.email,
+            password=payload.password,
+            full_name=payload.full_name,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return UserResponse(
+        id=user["id"],
+        email=user["email"],
+        full_name=user.get("full_name"),
+        is_active=user.get("is_active", True),
+    )
+
+
+@router.post("/auth/login", response_model=Token)
+async def login(payload: UserLogin):
+    """Authenticate and return a JWT access token."""
+    user = await user_store.authenticate_user(payload.email, payload.password)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Incorrect email or password")
+    token = create_access_token({"sub": user["email"]})
+    return Token(access_token=token)
+
+
+@router.get("/auth/me", response_model=UserResponse)
+async def me(current_user: UserResponse = Depends(get_current_user)):
+    """Return the currently authenticated user."""
+    return current_user
 
 
 # ─── Workflow Endpoints ──────────────────────────────────────────────────────
 
 @router.post("/workflows", response_model=WorkflowStatus)
-async def create_workflow(request: WorkflowRequest):
+async def create_workflow(
+    request: WorkflowRequest,
+    current_user: UserResponse = Depends(get_current_user),
+):
     """Start a new software development workflow."""
     try:
         return await workflow_engine.start_workflow(
@@ -40,7 +86,10 @@ async def get_workflow(workflow_id: str):
 
 
 @router.post("/workflows/{workflow_id}/approve", response_model=WorkflowStatus)
-async def approve_workflow(workflow_id: str):
+async def approve_workflow(
+    workflow_id: str,
+    current_user: UserResponse = Depends(get_current_user),
+):
     """Approve a workflow that's waiting for human approval."""
     try:
         return await workflow_engine.approve_workflow(workflow_id)
@@ -49,7 +98,10 @@ async def approve_workflow(workflow_id: str):
 
 
 @router.post("/workflows/background")
-async def create_background_workflow(request: WorkflowRequest):
+async def create_background_workflow(
+    request: WorkflowRequest,
+    current_user: UserResponse = Depends(get_current_user),
+):
     """Enqueue an autonomous workflow to run in a Celery worker.
 
     Returns a Celery task id. The worker persists results to the database.

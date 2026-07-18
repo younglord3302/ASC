@@ -157,3 +157,28 @@ class DeploymentStatus(BaseModel):
     health: str = "unknown"
     last_deployed: Optional[datetime] = None
     rollback_available: bool = False
+
+
+# --- Authentication ---
+
+class UserCreate(BaseModel):
+    email: str
+    password: str
+    full_name: Optional[str] = None
+
+
+class UserLogin(BaseModel):
+    email: str
+    password: str
+
+
+class UserResponse(BaseModel):
+    id: str
+    email: str
+    full_name: Optional[str] = None
+    is_active: bool = True
+
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
