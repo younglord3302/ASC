@@ -136,10 +136,23 @@ async def dashboard_costs():
     total_cost = sum(
         cm.total_cost for cm in workflow_engine.cost_metrics.values()
     )
+    total_calls = sum(
+        cm.api_calls for cm in workflow_engine.cost_metrics.values()
+    )
+    # Aggregate per-agent usage across all workflows.
+    by_agent: dict[str, dict] = {}
+    for cm in workflow_engine.cost_metrics.values():
+        for role, stats in cm.by_agent.items():
+            agg = by_agent.setdefault(role, {"tokens": 0, "cost": 0.0, "calls": 0})
+            agg["tokens"] += stats.get("tokens", 0)
+            agg["cost"] += stats.get("cost", 0.0)
+            agg["calls"] += stats.get("calls", 0)
     return {
         "total_tokens": total_tokens,
-        "total_cost": total_cost,
+        "total_cost": round(total_cost, 6),
+        "api_calls": total_calls,
         "workflow_count": len(workflow_engine.workflows),
+        "by_agent": by_agent,
     }
 
 

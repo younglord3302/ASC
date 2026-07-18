@@ -18,6 +18,7 @@ from app.agents.specialized import (
     DocumentationAgent, MemoryAgent,
 )
 from app.memory.memory_system import memory_system
+from app.models import persistence
 
 
 class WorkflowState(str, Enum):
@@ -26,6 +27,11 @@ class WorkflowState(str, Enum):
     WAITING_APPROVAL = "waiting_approval"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+# Approximate qwen-plus pricing (USD per 1K tokens). Adjust to match your plan.
+INPUT_COST_PER_1K = 0.0004
+OUTPUT_COST_PER_1K = 0.0012
 
 
 class WorkflowEngine:
@@ -94,6 +100,9 @@ class WorkflowEngine:
         self.messages[workflow_id] = []
         self.cost_metrics[workflow_id] = CostMetrics()
 
+        # Persist the initial workflow row (best-effort).
+        await persistence.save_workflow(self.workflows[workflow_id])
+
         # Start the workflow asynchronously
         asyncio.create_task(self._execute_workflow(workflow_id))
 
@@ -118,7 +127,8 @@ class WorkflowEngine:
             roadmap = await ceo.analyze_request(user_prompt)
             wf["outputs"]["roadmap"] = roadmap
             wf["progress"] = 0.05
-            await self._log_message(workflow_id, AgentRole.CEO, None, roadmap, MessageType.RESULT)
+            self._record_usage(workflow_id, AgentRole.CEO)
+            await self._log_message(workflow_id, AgentRole.CEO, None, roadmap, MessageType.RESULT, output_key="roadmap")
             await memory_system.store(roadmap, "session", 0.8, tags=["roadmap", "ceo"])
 
             # ─── Step 2: PM generates PRD ───────────────────────────────
@@ -127,13 +137,15 @@ class WorkflowEngine:
             prd = await pm.generate_prd(roadmap)
             wf["outputs"]["prd"] = prd
             wf["progress"] = 0.15
-            await self._log_message(workflow_id, AgentRole.PRODUCT_MANAGER, None, prd, MessageType.RESULT)
+            self._record_usage(workflow_id, AgentRole.PRODUCT_MANAGER)
+            await self._log_message(workflow_id, AgentRole.PRODUCT_MANAGER, None, prd, MessageType.RESULT, output_key="prd")
             await memory_system.store(prd, "session", 0.85, tags=["prd", "product_manager"])
 
             if mode == WorkflowMode.APPROVAL:
                 wf["state"] = WorkflowState.WAITING_APPROVAL
                 wf["current_agent"] = AgentRole.PRODUCT_MANAGER
                 wf["updated_at"] = datetime.utcnow()
+                await persistence.save_workflow(wf)
                 return  # Wait for human approval
 
             # Autonomous / manual modes continue straight through.
@@ -159,7 +171,8 @@ class WorkflowEngine:
             research = await researcher.research_tech_stack(prd)
             wf["outputs"]["research"] = research
             wf["progress"] = 0.25
-            await self._log_message(workflow_id, AgentRole.RESEARCHER, None, research, MessageType.RESULT)
+            self._record_usage(workflow_id, AgentRole.RESEARCHER)
+            await self._log_message(workflow_id, AgentRole.RESEARCHER, None, research, MessageType.RESULT, output_key="research")
 
             # ─── Step 4: Architect designs system ───────────────────────
             await self._update_agent_status(workflow_id, AgentRole.ARCHITECT, "Designing architecture...")
@@ -167,7 +180,8 @@ class WorkflowEngine:
             architecture = await architect.design_architecture(prd, research)
             wf["outputs"]["architecture"] = architecture
             wf["progress"] = 0.35
-            await self._log_message(workflow_id, AgentRole.ARCHITECT, None, architecture, MessageType.RESULT)
+            self._record_usage(workflow_id, AgentRole.ARCHITECT)
+            await self._log_message(workflow_id, AgentRole.ARCHITECT, None, architecture, MessageType.RESULT, output_key="architecture")
 
             # ─── Step 5: Database Engineer ──────────────────────────────
             await self._update_agent_status(workflow_id, AgentRole.DATABASE, "Designing database...")
@@ -175,7 +189,8 @@ class WorkflowEngine:
             db_schema = await db_agent.design_database(architecture)
             wf["outputs"]["db_schema"] = db_schema
             wf["progress"] = 0.40
-            await self._log_message(workflow_id, AgentRole.DATABASE, None, db_schema, MessageType.RESULT)
+            self._record_usage(workflow_id, AgentRole.DATABASE)
+            await self._log_message(workflow_id, AgentRole.DATABASE, None, db_schema, MessageType.RESULT, output_key="db_schema")
 
             # ─── Step 6: UI/UX Agent ───────────────────────────────────
             await self._update_agent_status(workflow_id, AgentRole.UI_UX, "Designing UI...")
@@ -183,7 +198,8 @@ class WorkflowEngine:
             ui_spec = await ui_agent.design_ui(prd, architecture)
             wf["outputs"]["ui_spec"] = ui_spec
             wf["progress"] = 0.50
-            await self._log_message(workflow_id, AgentRole.UI_UX, None, ui_spec, MessageType.RESULT)
+            self._record_usage(workflow_id, AgentRole.UI_UX)
+            await self._log_message(workflow_id, AgentRole.UI_UX, None, ui_spec, MessageType.RESULT, output_key="ui_spec")
 
             # ─── Step 7: Frontend & Backend (parallel) ─────────────────
             await self._update_agent_status(workflow_id, AgentRole.FRONTEND, "Generating frontend...")
@@ -199,8 +215,10 @@ class WorkflowEngine:
             wf["outputs"]["frontend"] = frontend_code
             wf["outputs"]["backend"] = backend_code
             wf["progress"] = 0.65
-            await self._log_message(workflow_id, AgentRole.FRONTEND, None, frontend_code, MessageType.RESULT)
-            await self._log_message(workflow_id, AgentRole.BACKEND, None, backend_code, MessageType.RESULT)
+            self._record_usage(workflow_id, AgentRole.FRONTEND)
+            self._record_usage(workflow_id, AgentRole.BACKEND)
+            await self._log_message(workflow_id, AgentRole.FRONTEND, None, frontend_code, MessageType.RESULT, output_key="frontend")
+            await self._log_message(workflow_id, AgentRole.BACKEND, None, backend_code, MessageType.RESULT, output_key="backend")
 
             # ─── Step 8: Security Audit ────────────────────────────────
             await self._update_agent_status(workflow_id, AgentRole.SECURITY, "Auditing security...")
@@ -210,7 +228,8 @@ class WorkflowEngine:
             )
             wf["outputs"]["security_report"] = security_report
             wf["progress"] = 0.75
-            await self._log_message(workflow_id, AgentRole.SECURITY, None, security_report, MessageType.RESULT)
+            self._record_usage(workflow_id, AgentRole.SECURITY)
+            await self._log_message(workflow_id, AgentRole.SECURITY, None, security_report, MessageType.RESULT, output_key="security_report")
 
             # ─── Step 9: QA generates tests ────────────────────────────
             await self._update_agent_status(workflow_id, AgentRole.QA, "Generating tests...")
@@ -220,7 +239,8 @@ class WorkflowEngine:
             )
             wf["outputs"]["test_report"] = test_report
             wf["progress"] = 0.85
-            await self._log_message(workflow_id, AgentRole.QA, None, test_report, MessageType.RESULT)
+            self._record_usage(workflow_id, AgentRole.QA)
+            await self._log_message(workflow_id, AgentRole.QA, None, test_report, MessageType.RESULT, output_key="test_report")
 
             # ─── Step 10: Reviewer reviews everything ──────────────────
             await self._update_agent_status(workflow_id, AgentRole.REVIEWER, "Reviewing all outputs...")
@@ -231,7 +251,8 @@ class WorkflowEngine:
             review = await reviewer.review_output("all agents", all_outputs)
             wf["outputs"]["review"] = review
             wf["progress"] = 0.90
-            await self._log_message(workflow_id, AgentRole.REVIEWER, None, review, MessageType.RESULT)
+            self._record_usage(workflow_id, AgentRole.REVIEWER)
+            await self._log_message(workflow_id, AgentRole.REVIEWER, None, review, MessageType.RESULT, output_key="review")
 
             # ─── Step 11: DevOps generates infrastructure ──────────────
             await self._update_agent_status(workflow_id, AgentRole.DEVOPS, "Generating infrastructure...")
@@ -239,7 +260,8 @@ class WorkflowEngine:
             infrastructure = await devops_agent.generate_infrastructure(architecture)
             wf["outputs"]["infrastructure"] = infrastructure
             wf["progress"] = 0.95
-            await self._log_message(workflow_id, AgentRole.DEVOPS, None, infrastructure, MessageType.RESULT)
+            self._record_usage(workflow_id, AgentRole.DEVOPS)
+            await self._log_message(workflow_id, AgentRole.DEVOPS, None, infrastructure, MessageType.RESULT, output_key="infrastructure")
 
             # ─── Step 12: Documentation ────────────────────────────────
             await self._update_agent_status(workflow_id, AgentRole.DOCUMENTATION, "Generating documentation...")
@@ -247,7 +269,8 @@ class WorkflowEngine:
             docs = await docs_agent.generate_documentation(str(wf["outputs"]))
             wf["outputs"]["documentation"] = docs
             wf["progress"] = 1.0
-            await self._log_message(workflow_id, AgentRole.DOCUMENTATION, None, docs, MessageType.RESULT)
+            self._record_usage(workflow_id, AgentRole.DOCUMENTATION)
+            await self._log_message(workflow_id, AgentRole.DOCUMENTATION, None, docs, MessageType.RESULT, output_key="documentation")
 
             # ─── Step 13: Memory consolidation ─────────────────────────
             await memory_system.store(
@@ -260,6 +283,7 @@ class WorkflowEngine:
 
             wf["state"] = WorkflowState.COMPLETED
             wf["updated_at"] = datetime.utcnow()
+            await persistence.save_workflow(wf)
 
         except Exception as e:
             wf["state"] = WorkflowState.FAILED
@@ -273,6 +297,8 @@ class WorkflowEngine:
         if not wf or wf["state"] != WorkflowState.WAITING_APPROVAL:
             raise ValueError("Workflow not found or not waiting for approval")
         wf["state"] = WorkflowState.RUNNING
+        wf["updated_at"] = datetime.utcnow()
+        await persistence.save_workflow(wf)
         asyncio.create_task(self._execute_post_approval(workflow_id))
         return await self.get_workflow_status(workflow_id)
 
@@ -354,6 +380,31 @@ class WorkflowEngine:
             wf["current_agent"] = role.value
             wf["updated_at"] = datetime.utcnow()
 
+    def _record_usage(self, workflow_id: str, role: AgentRole):
+        """Accumulate the most recent LLM token usage for an agent into cost metrics."""
+        agent = self.agents.get(role)
+        cm = self.cost_metrics.get(workflow_id)
+        if not agent or not cm:
+            return
+        usage = getattr(agent, "last_usage", None) or {}
+        prompt = int(usage.get("prompt_tokens", 0) or 0)
+        completion = int(usage.get("completion_tokens", 0) or 0)
+        total = int(usage.get("total_tokens", 0) or 0) or (prompt + completion)
+        if total == 0:
+            return
+        cost = (prompt / 1000.0) * INPUT_COST_PER_1K + (completion / 1000.0) * OUTPUT_COST_PER_1K
+
+        cm.total_tokens += total
+        cm.total_cost += cost
+        cm.api_calls += 1
+
+        agent_stats = cm.by_agent.setdefault(
+            role.value, {"tokens": 0, "cost": 0.0, "calls": 0}
+        )
+        agent_stats["tokens"] += total
+        agent_stats["cost"] += cost
+        agent_stats["calls"] += 1
+
     async def _log_message(
         self,
         workflow_id: str,
@@ -361,8 +412,14 @@ class WorkflowEngine:
         to_agent: Optional[AgentRole],
         content: str,
         msg_type: MessageType,
+        output_key: Optional[str] = None,
     ):
-        """Log a message in the workflow."""
+        """Log a message in the workflow.
+
+        If ``output_key`` is provided, only that output is persisted (the step's
+        newly produced result), avoiding re-writing the full outputs dict on
+        every call.
+        """
         message = AgentMessage(
             id=str(uuid.uuid4()),
             from_agent=from_agent,
@@ -373,6 +430,16 @@ class WorkflowEngine:
         )
         if workflow_id in self.messages:
             self.messages[workflow_id].append(message)
+
+        # Mirror durable state to the database (best-effort).
+        await persistence.save_message(message)
+        wf = self.workflows.get(workflow_id)
+        if wf:
+            await persistence.save_workflow(wf)
+            if output_key is not None and output_key in wf.get("outputs", {}):
+                await persistence.save_output(
+                    workflow_id, output_key, wf["outputs"][output_key]
+                )
 
 
 # Singleton

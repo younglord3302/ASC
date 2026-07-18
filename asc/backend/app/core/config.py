@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     # AI / LLM
     LLM_PROVIDER: str = "qwen"
     QWEN_API_KEY: Optional[str] = None
-    QWEN_MODEL: str = "qwen3-72b-instruct"
+    QWEN_MODEL: str = "qwen-plus"
     QWEN_API_BASE: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
     # Memory

@@ -153,6 +153,13 @@ class MemorySystem:
             session_id=self._session_id,
         )
         self.store.add(entry)
+        # Mirror to durable storage (best-effort; import here to avoid a cycle).
+        try:
+            from app.models import persistence
+
+            await persistence.save_memory(entry)
+        except Exception:
+            pass
         return entry
 
     async def recall(self, query: str, memory_type: Optional[MemoryType] = None) -> list[MemoryEntry]:

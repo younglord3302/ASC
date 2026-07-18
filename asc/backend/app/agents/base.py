@@ -21,6 +21,9 @@ class BaseAgent:
         self.session_id: Optional[str] = None
         self._message_history: list[dict] = []
         self._start_time: Optional[datetime] = None
+        # Token usage tracking
+        self.last_usage: dict = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        self.total_tokens: int = 0
 
     async def initialize(self, session_id: str, context: Optional[dict] = None):
         """Initialize the agent for a new session."""
@@ -28,6 +31,8 @@ class BaseAgent:
         self.status = AgentStatus.IDLE
         self.current_task = None
         self.progress = 0.0
+        self.last_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        self.total_tokens = 0
         self._message_history = [
             {"role": "system", "content": self.system_prompt}
         ]
@@ -41,8 +46,10 @@ class BaseAgent:
         """Process input and generate a response using the LLM."""
         self.status = AgentStatus.WORKING
         self._message_history.append({"role": "user", "content": prompt})
-        response = await llm_client.chat(self._message_history)
+        response, usage = await llm_client.chat_with_usage(self._message_history)
         self._message_history.append({"role": "assistant", "content": response})
+        self.last_usage = usage
+        self.total_tokens += usage.get("total_tokens", 0)
         self.status = AgentStatus.DONE
         return response
 

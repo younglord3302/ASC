@@ -351,7 +351,10 @@ export default function Dashboard() {
               </div>
               <div>
                 <p className="text-2xl font-bold">{costData?.total_tokens?.toLocaleString() || 0}</p>
-                <p className="text-xs text-surface-500">Total Tokens</p>
+                <p className="text-xs text-surface-500">
+                  Total Tokens
+                  {costData?.total_cost ? ` · $${costData.total_cost.toFixed(4)}` : ""}
+                </p>
               </div>
             </div>
           </div>

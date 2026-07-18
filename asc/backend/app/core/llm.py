@@ -5,6 +5,19 @@ from typing import Optional
 from app.core.config import settings
 
 
+def _normalize_usage(usage: Optional[dict]) -> dict:
+    """Coerce a provider usage object into a consistent token dict."""
+    usage = usage or {}
+    prompt = int(usage.get("prompt_tokens", 0) or 0)
+    completion = int(usage.get("completion_tokens", 0) or 0)
+    total = int(usage.get("total_tokens", 0) or 0) or (prompt + completion)
+    return {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": total,
+    }
+
+
 class LLMClient:
     """Unified LLM client that works with Qwen (DashScope) and OpenAI-compatible APIs."""
 
@@ -27,7 +40,24 @@ class LLMClient:
         max_tokens: int = 4096,
         stream: bool = False,
     ) -> str:
-        """Send a chat completion request."""
+        """Send a chat completion request and return only the content."""
+        content, _usage = await self.chat_with_usage(
+            messages, temperature=temperature, max_tokens=max_tokens, stream=stream
+        )
+        return content
+
+    async def chat_with_usage(
+        self,
+        messages: list[dict],
+        temperature: float = 0.7,
+        max_tokens: int = 4096,
+        stream: bool = False,
+    ) -> tuple[str, dict]:
+        """Send a chat completion request and return (content, usage).
+
+        ``usage`` is a dict with ``prompt_tokens``, ``completion_tokens`` and
+        ``total_tokens`` keys (zeros if the provider omits usage information).
+        """
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -48,7 +78,9 @@ class LLMClient:
             )
             response.raise_for_status()
             data = response.json()
-            return data["choices"][0]["message"]["content"]
+            content = data["choices"][0]["message"]["content"]
+            usage = _normalize_usage(data.get("usage"))
+            return content, usage
 
     async def chat_with_tools(
         self,
