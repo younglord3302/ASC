@@ -488,7 +488,7 @@ export default function Dashboard() {
             <h3 className="font-semibold mb-4">Memory System</h3>
             {memoryStats ? (
               <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-                {Object.entries(memoryStats).filter(([k]) => k !== "total").map(([tier, count]) => (
+                {Object.entries(memoryStats).filter(([k]) => k !== "total" && k !== "backend").map(([tier, count]) => (
                   <div key={tier} className="text-center p-4 rounded-lg bg-surface-50">
                     <p className="text-2xl font-bold text-primary-600">{count as number}</p>
                     <p className="text-xs text-surface-500 capitalize">{tier.replace("_", " ")}</p>

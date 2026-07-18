@@ -129,8 +129,40 @@ class MemorySystem:
     def __init__(self):
         # Backing store is private so it does not shadow the public ``store()``
         # coroutine method (an instance attribute named ``store`` would).
-        self._backend = InMemoryStore()
+        self._backend = self._make_backend()
+        self._graph = self._make_graph()
         self._session_id: Optional[str] = None
+
+    @staticmethod
+    def _make_backend() -> "InMemoryStore":
+        """Select the vector/keyword backend based on config, with fallback."""
+        from app.core.config import settings
+
+        if settings.MEMORY_BACKEND == "qdrant":
+            try:
+                from app.memory.vector_store import QdrantStore
+
+                return QdrantStore()
+            except Exception:  # noqa: BLE001 - fall back to in-memory
+                return InMemoryStore()
+        return InMemoryStore()
+
+    @staticmethod
+    def _make_graph():
+        """Create the graph store (connects to Neo4j only if enabled)."""
+        try:
+            from app.memory.graph_store import GraphStore
+
+            return GraphStore()
+        except Exception:  # noqa: BLE001
+            return None
+
+    @property
+    def backend_kind(self) -> str:
+        """Human-readable description of the active backends."""
+        vector = "qdrant" if getattr(self._backend, "available", False) else "memory"
+        graph = "neo4j" if (self._graph and self._graph.available) else "memory"
+        return f"vector={vector},graph={graph}"
 
     async def initialize(self, session_id: str):
         """Initialize memory for a new session."""
@@ -155,6 +187,13 @@ class MemorySystem:
             session_id=self._session_id,
         )
         self._backend.add(entry)
+
+        # Register the node and any relationships in the knowledge graph.
+        if self._graph is not None:
+            self._graph.add_node(entry.id, content=content, tier=entry.memory_type.value)
+            for related_id in entry.relationships:
+                self._graph.add_relationship(entry.id, related_id)
+
         # Mirror to durable storage (best-effort; import here to avoid a cycle).
         try:
             from app.models import persistence
@@ -164,10 +203,29 @@ class MemorySystem:
             pass
         return entry
 
-    async def recall(self, query: str, memory_type: Optional[MemoryType] = None) -> list[MemoryEntry]:
-        """Recall memories relevant to a query."""
+    async def recall(
+        self,
+        query: str,
+        memory_type: Optional[MemoryType] = None,
+        semantic: bool = False,
+    ) -> list[MemoryEntry]:
+        """Recall memories relevant to a query.
+
+        When ``semantic`` is True and no vector backend is active, a local
+        embedding similarity ranking is used instead of substring matching.
+        """
         tier = memory_type.value if memory_type else None
+        if semantic and not getattr(self._backend, "available", False):
+            from app.memory.vector_store import local_semantic_search
+
+            return local_semantic_search(self._backend, query, tier=tier)
         return self._backend.search(query, tier=tier)
+
+    async def related(self, memory_id: str, limit: int = 10) -> list[str]:
+        """Return ids of memories related to the given one (graph traversal)."""
+        if self._graph is None:
+            return []
+        return self._graph.related(memory_id, limit=limit)
 
     async def get_context(self, query: str) -> str:
         """Get formatted context string for agent prompts."""
@@ -194,6 +252,7 @@ class MemorySystem:
             "organization": len(self._backend._stores["organization"]),
             "long_term": len(self._backend._stores["long_term"]),
             "total": sum(len(s) for s in self._backend._stores.values()),
+            "backend": self.backend_kind,
         }
 
 

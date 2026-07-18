@@ -35,6 +35,14 @@ class Settings(BaseSettings):
     MINIO_ACCESS_KEY: str = "minioadmin"
     MINIO_SECRET_KEY: str = "minioadmin"
 
+    # Memory backend selection. "memory" (default) uses the in-process store.
+    # "qdrant" enables vector semantic recall; falls back to memory if the
+    # client/service is unavailable. Neo4j graph edges are enabled when
+    # GRAPH_ENABLED is true and the neo4j driver/service are reachable.
+    MEMORY_BACKEND: str = "memory"
+    GRAPH_ENABLED: bool = False
+    EMBEDDING_DIM: int = 256
+
     # Celery
     CELERY_BROKER_URL: str = "redis://localhost:6379/1"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"

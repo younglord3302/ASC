@@ -37,6 +37,8 @@ class ApiError extends Error {
   }
 }
 
+export { ApiError };
+
 function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
   const token = getToken();
   return token ? { ...extra, Authorization: `Bearer ${token}` } : extra;

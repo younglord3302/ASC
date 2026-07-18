@@ -149,10 +149,10 @@ async def get_all_agents():
 # ─── Memory Endpoints ────────────────────────────────────────────────────────
 
 @router.post("/memory/search")
-async def search_memory(query: str, memory_type: Optional[str] = None):
-    """Search through memory."""
+async def search_memory(query: str, memory_type: Optional[str] = None, semantic: bool = False):
+    """Search through memory (substring by default, or semantic ranking)."""
     mt = MemoryType(memory_type) if memory_type else None
-    results = await memory_system.recall(query, mt)
+    results = await memory_system.recall(query, mt, semantic=semantic)
     return {
         "results": [
             {
