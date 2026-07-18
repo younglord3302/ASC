@@ -58,6 +58,8 @@ class WorkflowEngine:
         self.workflows: dict[str, dict[str, Any]] = {}
         self.messages: dict[str, list[AgentMessage]] = {}
         self.cost_metrics: dict[str, CostMetrics] = {}
+        # Per-workflow memory ids so we can link outputs into a knowledge graph.
+        self._mem_ids: dict[str, dict[str, str]] = {}
 
     async def start_workflow(
         self,
@@ -74,12 +76,28 @@ class WorkflowEngine:
         await memory_system.initialize(session_id)
 
         # Store the user's request in memory
-        await memory_system.store(
+        req_entry = await memory_system.store(
             content=f"User Request: {user_prompt}",
             memory_type="session",
             importance=0.9,
             tags=["user_request", "initial"],
         )
+        # Track memory ids of each pipeline step so we can build a knowledge
+        # graph (relationships) as the workflow progresses.
+        self._mem_ids[workflow_id] = {"request": req_entry.id}
+
+        # Recall prior context (user preferences, past stack choices) so the
+        # company learns across projects, then feed it to the CEO.
+        try:
+            prior_context = await memory_system.recall(
+                f"preferred stack for: {user_prompt}", semantic=True
+            )
+            if prior_context:
+                ctx_text = "\n".join(m.content for m in prior_context[:5])
+                self.workflows[workflow_id]["context"] = ctx_text
+        except Exception:
+            # Memory recall is best-effort; never block the pipeline.
+            pass
 
         # Initialize all agents
         for agent in self.agents.values():
@@ -125,12 +143,23 @@ class WorkflowEngine:
             # ─── Step 1: CEO analyzes request ───────────────────────────
             await self._update_agent_status(workflow_id, AgentRole.CEO, "Analyzing request...")
             ceo = self.agents[AgentRole.CEO]
-            roadmap = await ceo.analyze_request(user_prompt)
+            prior_context = wf.get("context")
+            prompt = user_prompt
+            if prior_context:
+                prompt = (
+                    f"{user_prompt}\n\n"
+                    "Leverage prior project memory (user preferences, past stack "
+                    f"choices) when relevant:\n{prior_context}"
+                )
+            # CEoAgent.analyze_request builds its own prompt; pass context in.
+            roadmap = await ceo.analyze_request(prompt)
             wf["outputs"]["roadmap"] = roadmap
             wf["progress"] = 0.05
             self._record_usage(workflow_id, AgentRole.CEO)
             await self._log_message(workflow_id, AgentRole.CEO, None, roadmap, MessageType.RESULT, output_key="roadmap")
-            await memory_system.store(roadmap, "session", 0.8, tags=["roadmap", "ceo"])
+            self._mem_ids.setdefault(workflow_id, {})["roadmap"] = (
+                await memory_system.store(roadmap, "session", 0.8, tags=["roadmap", "ceo"])
+            ).id
 
             # ─── Step 2: PM generates PRD ───────────────────────────────
             await self._update_agent_status(workflow_id, AgentRole.PRODUCT_MANAGER, "Generating PRD...")
@@ -140,7 +169,9 @@ class WorkflowEngine:
             wf["progress"] = 0.15
             self._record_usage(workflow_id, AgentRole.PRODUCT_MANAGER)
             await self._log_message(workflow_id, AgentRole.PRODUCT_MANAGER, None, prd, MessageType.RESULT, output_key="prd")
-            await memory_system.store(prd, "session", 0.85, tags=["prd", "product_manager"])
+            self._mem_ids.setdefault(workflow_id, {})["prd"] = (
+                await memory_system.store(prd, "session", 0.85, tags=["prd", "product_manager"])
+            ).id
 
             if mode == WorkflowMode.APPROVAL:
                 wf["state"] = WorkflowState.WAITING_APPROVAL
@@ -174,6 +205,7 @@ class WorkflowEngine:
             wf["progress"] = 0.25
             self._record_usage(workflow_id, AgentRole.RESEARCHER)
             await self._log_message(workflow_id, AgentRole.RESEARCHER, None, research, MessageType.RESULT, output_key="research")
+            await self._store_step_memory(workflow_id, "research", research, 0.7, upstream=["prd"])
 
             # ─── Step 4: Architect designs system ───────────────────────
             await self._update_agent_status(workflow_id, AgentRole.ARCHITECT, "Designing architecture...")
@@ -183,6 +215,7 @@ class WorkflowEngine:
             wf["progress"] = 0.35
             self._record_usage(workflow_id, AgentRole.ARCHITECT)
             await self._log_message(workflow_id, AgentRole.ARCHITECT, None, architecture, MessageType.RESULT, output_key="architecture")
+            await self._store_step_memory(workflow_id, "architecture", architecture, 0.8, upstream=["prd", "research"])
 
             # ─── Step 5: Database Engineer ──────────────────────────────
             await self._update_agent_status(workflow_id, AgentRole.DATABASE, "Designing database...")
@@ -192,6 +225,7 @@ class WorkflowEngine:
             wf["progress"] = 0.40
             self._record_usage(workflow_id, AgentRole.DATABASE)
             await self._log_message(workflow_id, AgentRole.DATABASE, None, db_schema, MessageType.RESULT, output_key="db_schema")
+            await self._store_step_memory(workflow_id, "db_schema", db_schema, 0.7, upstream=["architecture"])
 
             # ─── Step 6: UI/UX Agent ───────────────────────────────────
             await self._update_agent_status(workflow_id, AgentRole.UI_UX, "Designing UI...")
@@ -201,6 +235,7 @@ class WorkflowEngine:
             wf["progress"] = 0.50
             self._record_usage(workflow_id, AgentRole.UI_UX)
             await self._log_message(workflow_id, AgentRole.UI_UX, None, ui_spec, MessageType.RESULT, output_key="ui_spec")
+            await self._store_step_memory(workflow_id, "ui_spec", ui_spec, 0.7, upstream=["prd", "architecture"])
 
             # ─── Step 7: Frontend & Backend (parallel) ─────────────────
             await self._update_agent_status(workflow_id, AgentRole.FRONTEND, "Generating frontend...")
@@ -220,6 +255,8 @@ class WorkflowEngine:
             self._record_usage(workflow_id, AgentRole.BACKEND)
             await self._log_message(workflow_id, AgentRole.FRONTEND, None, frontend_code, MessageType.RESULT, output_key="frontend")
             await self._log_message(workflow_id, AgentRole.BACKEND, None, backend_code, MessageType.RESULT, output_key="backend")
+            await self._store_step_memory(workflow_id, "frontend", frontend_code, 0.8, upstream=["ui_spec", "architecture"])
+            await self._store_step_memory(workflow_id, "backend", backend_code, 0.8, upstream=["architecture", "db_schema"])
 
             # ─── Step 8: Security Audit ────────────────────────────────
             await self._update_agent_status(workflow_id, AgentRole.SECURITY, "Auditing security...")
@@ -231,6 +268,7 @@ class WorkflowEngine:
             wf["progress"] = 0.75
             self._record_usage(workflow_id, AgentRole.SECURITY)
             await self._log_message(workflow_id, AgentRole.SECURITY, None, security_report, MessageType.RESULT, output_key="security_report")
+            await self._store_step_memory(workflow_id, "security_report", security_report, 0.7, upstream=["frontend", "backend"])
 
             # ─── Step 9: QA generates tests ────────────────────────────
             await self._update_agent_status(workflow_id, AgentRole.QA, "Generating tests...")
@@ -242,6 +280,7 @@ class WorkflowEngine:
             wf["progress"] = 0.85
             self._record_usage(workflow_id, AgentRole.QA)
             await self._log_message(workflow_id, AgentRole.QA, None, test_report, MessageType.RESULT, output_key="test_report")
+            await self._store_step_memory(workflow_id, "test_report", test_report, 0.7, upstream=["frontend", "backend"])
 
             # ─── Step 10: Reviewer reviews everything ──────────────────
             await self._update_agent_status(workflow_id, AgentRole.REVIEWER, "Reviewing all outputs...")
@@ -254,6 +293,7 @@ class WorkflowEngine:
             wf["progress"] = 0.90
             self._record_usage(workflow_id, AgentRole.REVIEWER)
             await self._log_message(workflow_id, AgentRole.REVIEWER, None, review, MessageType.RESULT, output_key="review")
+            await self._store_step_memory(workflow_id, "review", review, 0.7, upstream=["security_report", "test_report"])
 
             # ─── Step 11: DevOps generates infrastructure ──────────────
             await self._update_agent_status(workflow_id, AgentRole.DEVOPS, "Generating infrastructure...")
@@ -263,6 +303,7 @@ class WorkflowEngine:
             wf["progress"] = 0.95
             self._record_usage(workflow_id, AgentRole.DEVOPS)
             await self._log_message(workflow_id, AgentRole.DEVOPS, None, infrastructure, MessageType.RESULT, output_key="infrastructure")
+            await self._store_step_memory(workflow_id, "infrastructure", infrastructure, 0.7, upstream=["architecture"])
 
             # ─── Step 12: Documentation ────────────────────────────────
             await self._update_agent_status(workflow_id, AgentRole.DOCUMENTATION, "Generating documentation...")
@@ -272,6 +313,7 @@ class WorkflowEngine:
             wf["progress"] = 1.0
             self._record_usage(workflow_id, AgentRole.DOCUMENTATION)
             await self._log_message(workflow_id, AgentRole.DOCUMENTATION, None, docs, MessageType.RESULT, output_key="documentation")
+            await self._store_step_memory(workflow_id, "documentation", docs, 0.7, upstream=["review", "infrastructure"])
 
             # ─── Step 13: Memory consolidation ─────────────────────────
             await memory_system.store(
@@ -380,6 +422,34 @@ class WorkflowEngine:
         if wf:
             wf["current_agent"] = role.value
             wf["updated_at"] = datetime.utcnow()
+
+    async def _store_step_memory(
+        self,
+        workflow_id: str,
+        step_key: str,
+        content: str,
+        importance: float,
+        upstream: list[str] | None = None,
+    ):
+        """Store a pipeline step's output as a memory node.
+
+        Links it to the memory ids of ``upstream`` steps so the knowledge
+        graph (``/memory/related``) reflects real agent dependencies.
+        """
+        rel_ids = []
+        for u in (upstream or []):
+            mid = self._mem_ids.get(workflow_id, {}).get(u)
+            if mid:
+                rel_ids.append(mid)
+        entry = await memory_system.store(
+            content=content[:2000],
+            memory_type="project",
+            importance=importance,
+            tags=[step_key, workflow_id[:8]],
+            relationships=rel_ids,
+        )
+        self._mem_ids.setdefault(workflow_id, {})[step_key] = entry.id
+        return entry
 
     def _record_usage(self, workflow_id: str, role: AgentRole):
         """Accumulate the most recent LLM token usage for an agent into cost metrics."""
