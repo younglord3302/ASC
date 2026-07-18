@@ -135,7 +135,15 @@ function AgentCard({ agent }: { agent: Agent }) {
   );
 }
 
-function WorkflowCard({ workflow }: { workflow: Workflow }) {
+function WorkflowCard({
+  workflow,
+  selected = false,
+  onSelect,
+}: {
+  workflow: Workflow;
+  selected?: boolean;
+  onSelect?: () => void;
+}) {
   const statusColors: Record<string, string> = {
     pending: "bg-yellow-100 text-yellow-800",
     running: "bg-blue-100 text-blue-800",
@@ -153,7 +161,13 @@ function WorkflowCard({ workflow }: { workflow: Workflow }) {
   const StatusIcon = statusIcons[workflow.status] || Activity;
 
   return (
-    <div className="bg-white rounded-xl border border-surface-200 p-4 hover:shadow-md transition-shadow">
+    <button
+      type="button"
+      onClick={onSelect}
+      className={`text-left bg-white rounded-xl border p-4 hover:shadow-md transition-shadow ${
+        selected ? "border-primary-400 ring-2 ring-primary-200" : "border-surface-200"
+      }`}
+    >
       <div className="flex items-center justify-between mb-3">
         <h3 className="font-semibold text-sm truncate">{workflow.project_name}</h3>
         <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium ${statusColors[workflow.status] || ""}`}>
@@ -173,7 +187,7 @@ function WorkflowCard({ workflow }: { workflow: Workflow }) {
           </span>
         )}
       </div>
-    </div>
+    </button>
   );
 }
 
@@ -200,6 +214,11 @@ export default function Dashboard() {
   const [relSource, setRelSource] = useState<{ id: string; content: string } | null>(null);
   const [relResults, setRelResults] = useState<any[] | null>(null);
   const [relLoading, setRelLoading] = useState(false);
+
+  // Workflow transcript: expand a card to view its live agent conversation.
+  const [selectedWf, setSelectedWf] = useState<string | null>(null);
+  const [wfMessages, setWfMessages] = useState<any[]>([]);
+  const [wfMsgLoading, setWfMsgLoading] = useState(false);
 
   // Validate any stored token on mount, and react to auth loss (401).
   useEffect(() => {
@@ -296,6 +315,28 @@ export default function Dashboard() {
       setMemLoading(false);
     }
   }, [memQuery, memSemantic]);
+
+  const fetchMessages = useCallback(async (workflowId: string) => {
+    setWfMsgLoading(true);
+    setWfMessages([]);
+    try {
+      const data = await apiGet(`/workflows/${workflowId}/messages`);
+      setWfMessages(data.messages || []);
+    } catch (err) {
+      console.error("Failed to fetch workflow messages:", err);
+    } finally {
+      setWfMsgLoading(false);
+    }
+  }, []);
+
+  const toggleWorkflow = useCallback((workflowId: string) => {
+    setSelectedWf((cur) => {
+      const next = cur === workflowId ? null : workflowId;
+      if (next) fetchMessages(next);
+      else setWfMessages([]);
+      return next;
+    });
+  }, [fetchMessages]);
 
   const fetchRelated = useCallback(async (id: string, content: string) => {
     setRelSource({ id, content });
@@ -522,8 +563,53 @@ export default function Dashboard() {
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {workflows.map((wf) => (
-                  <WorkflowCard key={wf.id} workflow={wf} />
+                  <WorkflowCard
+                    key={wf.id}
+                    workflow={wf}
+                    selected={selectedWf === wf.id}
+                    onSelect={() => toggleWorkflow(wf.id)}
+                  />
                 ))}
+              </div>
+            )}
+
+            {selectedWf && (
+              <div className="mt-6 bg-white rounded-xl border border-surface-200 p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="font-semibold">Agent Conversation</h3>
+                  <button
+                    onClick={() => toggleWorkflow(selectedWf)}
+                    className="text-sm text-surface-500 hover:text-surface-800"
+                  >
+                    Close
+                  </button>
+                </div>
+                {wfMsgLoading ? (
+                  <Loader2 className="w-5 h-5 animate-spin text-primary-500" />
+                ) : wfMessages.length === 0 ? (
+                  <p className="text-sm text-surface-400">No messages yet.</p>
+                ) : (
+                  <ul className="space-y-3 max-h-[28rem] overflow-auto pr-1">
+                    {wfMessages.map((m, i) => {
+                      const role = m.from as keyof typeof AGENT_META;
+                      const meta = AGENT_META[role];
+                      return (
+                        <li key={m.id || i} className="flex gap-3">
+                          <span className={`mt-1 w-2 h-2 rounded-full shrink-0 ${meta?.color || "text-surface-400"}`} />
+                          <div className="min-w-0">
+                            <p className="text-xs font-medium text-surface-600">
+                              {meta?.label || m.from || "System"}
+                              {m.type ? <span className="ml-1 text-surface-400">· {m.type}</span> : null}
+                            </p>
+                            <p className="text-sm text-surface-700 whitespace-pre-wrap break-words">
+                              {m.content}
+                            </p>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
               </div>
             )}
           </div>

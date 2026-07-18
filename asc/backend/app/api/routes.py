@@ -139,6 +139,30 @@ async def get_workflow_outputs(workflow_id: str):
     return {"outputs": wf.get("outputs", {})}
 
 
+@router.get("/workflows/{workflow_id}/messages")
+async def get_workflow_messages(workflow_id: str):
+    """Get the agent conversation transcript for a workflow."""
+    try:
+        status = await workflow_engine.get_workflow_status(workflow_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {
+        "workflow_id": workflow_id,
+        "status": status.status,
+        "messages": [
+            {
+                "id": m.id,
+                "from": m.from_agent.value if m.from_agent else None,
+                "to": m.to_agent.value if m.to_agent else None,
+                "type": m.message_type.value,
+                "content": m.content,
+                "timestamp": m.timestamp.isoformat(),
+            }
+            for m in status.messages
+        ],
+    }
+
+
 # ─── Agent Endpoints ─────────────────────────────────────────────────────────
 
 @router.get("/agents")
