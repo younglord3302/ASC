@@ -48,6 +48,26 @@ async def approve_workflow(workflow_id: str):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.post("/workflows/background")
+async def create_background_workflow(request: WorkflowRequest):
+    """Enqueue an autonomous workflow to run in a Celery worker.
+
+    Returns a Celery task id. The worker persists results to the database.
+    Best suited for autonomous mode (approval mode would pause for input).
+    """
+    try:
+        from app.tasks.workflow_tasks import run_workflow_task
+
+        async_result = run_workflow_task.delay(
+            user_prompt=request.user_prompt,
+            mode=request.mode.value,
+            project_name=request.project_name,
+        )
+        return {"task_id": async_result.id, "status": "queued"}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Task queue unavailable: {e}")
+
+
 @router.get("/workflows/{workflow_id}/graph", response_model=WorkflowGraph)
 async def get_workflow_graph(workflow_id: str):
     """Get the workflow execution DAG."""
