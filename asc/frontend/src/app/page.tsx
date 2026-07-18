@@ -26,7 +26,18 @@ import {
   Zap,
   Search,
   Layers,
+  LogOut,
 } from "lucide-react";
+
+import {
+  apiGet,
+  apiPost,
+  isAuthenticated,
+  clearToken,
+  fetchMe,
+  type CurrentUser,
+} from "@/lib/auth";
+import LoginForm from "@/components/LoginForm";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -73,26 +84,6 @@ const AGENT_META: Record<string, { icon: any; color: string; label: string }> = 
   documentation: { icon: BookOpen, color: "text-sky-500", label: "Documentation" },
   memory: { icon: Database, color: "text-rose-500", label: "Memory Agent" },
 };
-
-// ─── API Client ─────────────────────────────────────────────────────────────
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
-
-async function apiGet(path: string) {
-  const res = await fetch(`${API_BASE}${path}`);
-  if (!res.ok) throw new Error(`API error: ${res.status}`);
-  return res.json();
-}
-
-async function apiPost(path: string, body?: any) {
-  const res = await fetch(`${API_BASE}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  if (!res.ok) throw new Error(`API error: ${res.status}`);
-  return res.json();
-}
 
 // ─── Components ─────────────────────────────────────────────────────────────
 
@@ -189,6 +180,9 @@ function WorkflowCard({ workflow }: { workflow: Workflow }) {
 // ─── Main Dashboard ─────────────────────────────────────────────────────────
 
 export default function Dashboard() {
+  const [authed, setAuthed] = useState(false);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [user, setUser] = useState<CurrentUser | null>(null);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [prompt, setPrompt] = useState("");
@@ -196,6 +190,57 @@ export default function Dashboard() {
   const [activeTab, setActiveTab] = useState<"agents" | "workflows" | "memory">("agents");
   const [memoryStats, setMemoryStats] = useState<any>(null);
   const [costData, setCostData] = useState<any>(null);
+
+  // Validate any stored token on mount, and react to auth loss (401).
+  useEffect(() => {
+    let cancelled = false;
+    async function check() {
+      if (!isAuthenticated()) {
+        if (!cancelled) {
+          setAuthed(false);
+          setAuthChecked(true);
+        }
+        return;
+      }
+      try {
+        const me = await fetchMe();
+        if (!cancelled) {
+          setUser(me);
+          setAuthed(true);
+        }
+      } catch {
+        if (!cancelled) setAuthed(false);
+      } finally {
+        if (!cancelled) setAuthChecked(true);
+      }
+    }
+    check();
+
+    const onUnauthorized = () => {
+      setAuthed(false);
+      setUser(null);
+    };
+    window.addEventListener("asc:unauthorized", onUnauthorized);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("asc:unauthorized", onUnauthorized);
+    };
+  }, []);
+
+  const handleLoginSuccess = useCallback(async () => {
+    setAuthed(true);
+    try {
+      setUser(await fetchMe());
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const handleLogout = useCallback(() => {
+    clearToken();
+    setAuthed(false);
+    setUser(null);
+  }, []);
 
   const fetchData = useCallback(async () => {
     try {
@@ -222,11 +267,12 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
+    if (!authed) return;
     fetchData();
     fetchMemoryStats();
     const interval = setInterval(fetchData, 3000);
     return () => clearInterval(interval);
-  }, [fetchData, fetchMemoryStats]);
+  }, [authed, fetchData, fetchMemoryStats]);
 
   const handleSubmit = async () => {
     if (!prompt.trim()) return;
@@ -247,6 +293,18 @@ export default function Dashboard() {
 
   const activeWorkflows = workflows.filter((w) => w.status === "running" || w.status === "waiting_approval");
   const completedWorkflows = workflows.filter((w) => w.status === "completed");
+
+  // Auth gate: show nothing until we've checked, then login screen if needed.
+  if (!authChecked) {
+    return (
+      <div className="min-h-screen bg-surface-50 flex items-center justify-center">
+        <Loader2 className="w-6 h-6 animate-spin text-primary-500" />
+      </div>
+    );
+  }
+  if (!authed) {
+    return <LoginForm onSuccess={handleLoginSuccess} />;
+  }
 
   return (
     <div className="min-h-screen bg-surface-50">
@@ -272,6 +330,19 @@ export default function Dashboard() {
                 <CheckCircle2 className="w-4 h-4 text-blue-500" />
                 <span>{completedWorkflows.length} done</span>
               </div>
+              {user && (
+                <span className="hidden sm:inline text-sm text-surface-500 max-w-[180px] truncate">
+                  {user.email}
+                </span>
+              )}
+              <button
+                onClick={handleLogout}
+                title="Sign out"
+                className="flex items-center gap-1.5 text-sm text-surface-500 hover:text-surface-800 transition-colors"
+              >
+                <LogOut className="w-4 h-4" />
+                <span className="hidden sm:inline">Sign out</span>
+              </button>
             </div>
           </div>
         </div>
