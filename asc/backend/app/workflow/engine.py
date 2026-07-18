@@ -17,6 +17,7 @@ from app.agents.specialized import (
     DevOpsAgent, SecurityAgent, QAAgent, ReviewerAgent,
     DocumentationAgent, MemoryAgent,
 )
+from app.core.llm import _normalize_usage
 from app.memory.memory_system import memory_system
 from app.models import persistence
 
@@ -386,10 +387,10 @@ class WorkflowEngine:
         cm = self.cost_metrics.get(workflow_id)
         if not agent or not cm:
             return
-        usage = getattr(agent, "last_usage", None) or {}
-        prompt = int(usage.get("prompt_tokens", 0) or 0)
-        completion = int(usage.get("completion_tokens", 0) or 0)
-        total = int(usage.get("total_tokens", 0) or 0) or (prompt + completion)
+        usage = _normalize_usage(getattr(agent, "last_usage", None))
+        prompt = usage["prompt_tokens"]
+        completion = usage["completion_tokens"]
+        total = usage["total_tokens"]
         if total == 0:
             return
         cost = (prompt / 1000.0) * INPUT_COST_PER_1K + (completion / 1000.0) * OUTPUT_COST_PER_1K

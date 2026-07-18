@@ -127,7 +127,9 @@ class MemorySystem:
     """Central memory system managing all five memory tiers."""
 
     def __init__(self):
-        self.store = InMemoryStore()
+        # Backing store is private so it does not shadow the public ``store()``
+        # coroutine method (an instance attribute named ``store`` would).
+        self._backend = InMemoryStore()
         self._session_id: Optional[str] = None
 
     async def initialize(self, session_id: str):
@@ -152,7 +154,7 @@ class MemorySystem:
             relationships=relationships or [],
             session_id=self._session_id,
         )
-        self.store.add(entry)
+        self._backend.add(entry)
         # Mirror to durable storage (best-effort; import here to avoid a cycle).
         try:
             from app.models import persistence
@@ -165,7 +167,7 @@ class MemorySystem:
     async def recall(self, query: str, memory_type: Optional[MemoryType] = None) -> list[MemoryEntry]:
         """Recall memories relevant to a query."""
         tier = memory_type.value if memory_type else None
-        return self.store.search(query, tier=tier)
+        return self._backend.search(query, tier=tier)
 
     async def get_context(self, query: str) -> str:
         """Get formatted context string for agent prompts."""
@@ -181,17 +183,17 @@ class MemorySystem:
 
     async def consolidate(self):
         """Run memory consolidation."""
-        self.store.consolidate()
+        self._backend.consolidate()
 
     async def get_stats(self) -> dict:
         """Get memory system statistics."""
         return {
-            "working": len(self.store._stores["working"]),
-            "session": len(self.store._stores["session"]),
-            "project": len(self.store._stores["project"]),
-            "organization": len(self.store._stores["organization"]),
-            "long_term": len(self.store._stores["long_term"]),
-            "total": sum(len(s) for s in self.store._stores.values()),
+            "working": len(self._backend._stores["working"]),
+            "session": len(self._backend._stores["session"]),
+            "project": len(self._backend._stores["project"]),
+            "organization": len(self._backend._stores["organization"]),
+            "long_term": len(self._backend._stores["long_term"]),
+            "total": sum(len(s) for s in self._backend._stores.values()),
         }
 
 

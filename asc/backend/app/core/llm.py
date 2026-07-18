@@ -10,7 +10,11 @@ def _normalize_usage(usage: Optional[dict]) -> dict:
     usage = usage or {}
     prompt = int(usage.get("prompt_tokens", 0) or 0)
     completion = int(usage.get("completion_tokens", 0) or 0)
-    total = int(usage.get("total_tokens", 0) or 0) or (prompt + completion)
+    raw_total = usage.get("total_tokens")
+    if raw_total is None:
+        total = prompt + completion
+    else:
+        total = int(raw_total or 0)
     return {
         "prompt_tokens": prompt,
         "completion_tokens": completion,
