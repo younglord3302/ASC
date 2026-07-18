@@ -191,6 +191,16 @@ export default function Dashboard() {
   const [memoryStats, setMemoryStats] = useState<any>(null);
   const [costData, setCostData] = useState<any>(null);
 
+  // Memory Explorer: semantic/keyword search + knowledge-graph traversal.
+  const [memQuery, setMemQuery] = useState("");
+  const [memSemantic, setMemSemantic] = useState(true);
+  const [memResults, setMemResults] = useState<any[]>([]);
+  const [memLoading, setMemLoading] = useState(false);
+  const [memError, setMemError] = useState<string | null>(null);
+  const [relSource, setRelSource] = useState<{ id: string; content: string } | null>(null);
+  const [relResults, setRelResults] = useState<any[] | null>(null);
+  const [relLoading, setRelLoading] = useState(false);
+
   // Validate any stored token on mount, and react to auth loss (401).
   useEffect(() => {
     let cancelled = false;
@@ -263,6 +273,42 @@ export default function Dashboard() {
       setMemoryStats(stats);
     } catch (err) {
       console.error("Failed to fetch memory stats:", err);
+    }
+  }, []);
+
+  const runMemSearch = useCallback(async () => {
+    const q = memQuery.trim();
+    if (!q) return;
+    setMemLoading(true);
+    setMemError(null);
+    setRelSource(null);
+    setRelResults(null);
+    try {
+      const data = await apiPost("/memory/search", {
+        query: q,
+        semantic: memSemantic,
+      });
+      setMemResults(data.results || []);
+    } catch (err: any) {
+      setMemError(err?.message || "Search failed");
+      setMemResults([]);
+    } finally {
+      setMemLoading(false);
+    }
+  }, [memQuery, memSemantic]);
+
+  const fetchRelated = useCallback(async (id: string, content: string) => {
+    setRelSource({ id, content });
+    setRelLoading(true);
+    setRelResults(null);
+    try {
+      const data = await apiGet(`/memory/related/${id}`);
+      setRelResults(data.related || []);
+    } catch (err) {
+      console.error("Failed to fetch related memories:", err);
+      setRelResults([]);
+    } finally {
+      setRelLoading(false);
     }
   }, []);
 
@@ -484,20 +530,142 @@ export default function Dashboard() {
         )}
 
         {activeTab === "memory" && (
-          <div className="bg-white rounded-xl border border-surface-200 p-6">
-            <h3 className="font-semibold mb-4">Memory System</h3>
-            {memoryStats ? (
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-                {Object.entries(memoryStats).filter(([k]) => k !== "total" && k !== "backend").map(([tier, count]) => (
-                  <div key={tier} className="text-center p-4 rounded-lg bg-surface-50">
-                    <p className="text-2xl font-bold text-primary-600">{count as number}</p>
-                    <p className="text-xs text-surface-500 capitalize">{tier.replace("_", " ")}</p>
-                  </div>
-                ))}
+          <div className="space-y-6">
+            {/* Tier breakdown */}
+            <div className="bg-white rounded-xl border border-surface-200 p-6">
+              <h3 className="font-semibold mb-4">Memory System</h3>
+              {memoryStats ? (
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                  {Object.entries(memoryStats).filter(([k]) => k !== "total" && k !== "backend").map(([tier, count]) => (
+                    <div key={tier} className="text-center p-4 rounded-lg bg-surface-50">
+                      <p className="text-2xl font-bold text-primary-600">{count as number}</p>
+                      <p className="text-xs text-surface-500 capitalize">{tier.replace("_", " ")}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-surface-400 text-sm">Loading memory stats...</p>
+              )}
+            </div>
+
+            {/* Semantic Search + Knowledge Graph */}
+            <div className="bg-white rounded-xl border border-surface-200 p-6">
+              <h3 className="font-semibold mb-1">Search & Knowledge Graph</h3>
+              <p className="text-sm text-surface-500 mb-4">
+                Recall memories by meaning (semantic) or exact text, then expand a node to
+                traverse its relationships in the knowledge graph.
+              </p>
+
+              <div className="flex flex-wrap gap-3 items-center mb-4">
+                <input
+                  type="text"
+                  value={memQuery}
+                  onChange={(e) => setMemQuery(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && runMemSearch()}
+                  placeholder="Search memory (e.g. database schema design)..."
+                  className="flex-1 min-w-[240px] px-4 py-2.5 rounded-lg border border-surface-300 focus:outline-none focus:ring-2 focus:ring-primary-500 text-sm"
+                  disabled={memLoading}
+                />
+                <button
+                  onClick={() => setMemSemantic((v) => !v)}
+                  className={`px-3 py-2.5 rounded-lg text-sm font-medium border transition-colors ${
+                    memSemantic
+                      ? "bg-primary-50 border-primary-300 text-primary-700"
+                      : "bg-white border-surface-300 text-surface-600 hover:bg-surface-50"
+                  }`}
+                  title="Toggle semantic (vector) vs keyword search"
+                >
+                  {memSemantic ? "Semantic" : "Keyword"}
+                </button>
+                <button
+                  onClick={runMemSearch}
+                  disabled={memLoading || !memQuery.trim()}
+                  className="px-4 py-2.5 bg-primary-600 text-white rounded-lg text-sm font-medium hover:bg-primary-700 disabled:opacity-50 flex items-center gap-2"
+                >
+                  {memLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+                  Search
+                </button>
               </div>
-            ) : (
-              <p className="text-surface-400 text-sm">Loading memory stats...</p>
-            )}
+
+              {memError && (
+                <p className="text-sm text-red-600 mb-3">{memError}</p>
+              )}
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {/* Results list */}
+                <div>
+                  <p className="text-xs font-semibold text-surface-500 uppercase tracking-wide mb-2">
+                    {memResults.length > 0 ? `${memResults.length} results` : "Results"}
+                  </p>
+                  {memResults.length === 0 ? (
+                    <p className="text-sm text-surface-400">
+                      {memQuery.trim() ? "No matching memories." : "Run a search to recall memories."}
+                    </p>
+                  ) : (
+                    <ul className="space-y-2 max-h-96 overflow-auto pr-1">
+                      {memResults.map((m) => (
+                        <li key={m.id}>
+                          <button
+                            onClick={() => fetchRelated(m.id, m.content)}
+                            className={`w-full text-left p-3 rounded-lg border transition-colors ${
+                              relSource?.id === m.id
+                                ? "border-primary-300 bg-primary-50"
+                                : "border-surface-200 hover:border-primary-200 hover:bg-surface-50"
+                            }`}
+                          >
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="text-[10px] font-medium uppercase px-1.5 py-0.5 rounded bg-surface-100 text-surface-600">
+                                {m.type}
+                              </span>
+                              <span className="text-[10px] text-surface-400">
+                                importance {typeof m.importance === "number" ? m.importance.toFixed(2) : m.importance}
+                              </span>
+                            </div>
+                            <p className="text-sm text-surface-700 line-clamp-3">{m.content}</p>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+
+                {/* Related graph panel */}
+                <div>
+                  <p className="text-xs font-semibold text-surface-500 uppercase tracking-wide mb-2">
+                    Knowledge Graph
+                  </p>
+                  {!relSource ? (
+                    <p className="text-sm text-surface-400">
+                      Select a memory on the left to view its relationships.
+                    </p>
+                  ) : (
+                    <div className="rounded-lg border border-surface-200 p-4">
+                      <p className="text-xs text-surface-500 mb-1">Selected node</p>
+                      <p className="text-sm text-surface-800 mb-3 line-clamp-3">{relSource.content}</p>
+                      {relLoading ? (
+                        <Loader2 className="w-4 h-4 animate-spin text-primary-500" />
+                      ) : relResults && relResults.length > 0 ? (
+                        <ul className="space-y-2">
+                          {relResults.map((r) => (
+                            <li key={r.id} className="flex items-start gap-2 text-sm">
+                              <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-primary-400 shrink-0" />
+                              <div>
+                                <span className="text-[10px] font-medium uppercase px-1.5 py-0.5 rounded bg-surface-100 text-surface-600 mr-1">
+                                  {r.type}
+                                </span>
+                                <span className="text-surface-700">{r.content}</span>
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="text-sm text-surface-400">No related memories (isolated node).</p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
           </div>
         )}
       </main>

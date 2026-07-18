@@ -1,6 +1,7 @@
 """FastAPI routes for the ASC platform."""
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Depends
+from pydantic import BaseModel
 from typing import Optional
 import json
 import asyncio
@@ -148,11 +149,17 @@ async def get_all_agents():
 
 # ─── Memory Endpoints ────────────────────────────────────────────────────────
 
+class MemorySearchRequest(BaseModel):
+    query: str
+    memory_type: Optional[str] = None
+    semantic: bool = False
+
+
 @router.post("/memory/search")
-async def search_memory(query: str, memory_type: Optional[str] = None, semantic: bool = False):
+async def search_memory(req: MemorySearchRequest):
     """Search through memory (substring by default, or semantic ranking)."""
-    mt = MemoryType(memory_type) if memory_type else None
-    results = await memory_system.recall(query, mt, semantic=semantic)
+    mt = MemoryType(req.memory_type) if req.memory_type else None
+    results = await memory_system.recall(req.query, mt, semantic=req.semantic)
     return {
         "results": [
             {
@@ -172,6 +179,34 @@ async def search_memory(query: str, memory_type: Optional[str] = None, semantic:
 async def get_memory_stats():
     """Get memory system statistics."""
     return await memory_system.get_stats()
+
+
+@router.get("/memory/related/{memory_id}")
+async def get_related_memories(memory_id: str, limit: int = 20):
+    """Get memories related to the given one (knowledge-graph traversal)."""
+    related = await memory_system.related(memory_id, limit=limit)
+    # Resolve related ids back to full entries for the UI.
+    all_entries = (
+        list(memory_system._backend._stores["working"].values())
+        + list(memory_system._backend._stores["session"].values())
+        + list(memory_system._backend._stores["project"].values())
+        + list(memory_system._backend._stores["organization"].values())
+        + list(memory_system._backend._stores["long_term"].values())
+    )
+    by_id = {e.id: e for e in all_entries}
+    return {
+        "id": memory_id,
+        "related": [
+            {
+                "id": r_id,
+                "type": by_id[r_id].memory_type.value,
+                "content": by_id[r_id].content[:200],
+                "importance": by_id[r_id].importance,
+            }
+            for r_id in related
+            if r_id in by_id
+        ],
+    }
 
 
 # ─── Dashboard Endpoints ─────────────────────────────────────────────────────
