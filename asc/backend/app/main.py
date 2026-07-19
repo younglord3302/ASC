@@ -3,13 +3,20 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 from app.core.config import settings
 from app.api.routes import router
+from app.api.limiter import limiter
 from app.models.db_session import init_db
 
 logger = logging.getLogger("asc")
+
+# Per-client rate limiting keyed by the client IP. Protects auth and workflow
+# endpoints from abuse (PRD: API rate limiting). The limiter instance lives in
+# app.api.limiter to avoid a circular import with routes.py.
 
 
 @asynccontextmanager
@@ -29,6 +36,20 @@ app = FastAPI(
     description="A production-grade multi-agent AI platform that functions like a complete software company.",
     lifespan=lifespan,
 )
+
+# Rate limiting middleware + handler.
+app.state.limiter = limiter
+app.add_middleware(SlowAPIMiddleware)
+
+
+@app.exception_handler(RateLimitExceeded)
+async def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    from fastapi.responses import JSONResponse
+
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "Rate limit exceeded. Please slow down and retry shortly."},
+    )
 
 # CORS middleware. Restrict to configured origins (never the wildcard when
 # credentials are allowed) so browser auth works and we don't open the API to

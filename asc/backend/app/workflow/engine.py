@@ -18,6 +18,7 @@ from app.agents.specialized import (
     DocumentationAgent, MemoryAgent,
 )
 from app.core.llm import _normalize_usage
+from app.core.config import settings
 from app.memory.memory_system import memory_system
 from app.models import persistence
 
@@ -28,6 +29,10 @@ class WorkflowState(str, Enum):
     WAITING_APPROVAL = "waiting_approval"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+class BudgetExceeded(Exception):
+    """Raised when a workflow's token usage surpasses MAX_TOKENS_PER_WORKFLOW."""
 
 
 # Approximate qwen-plus pricing (USD per 1K tokens). Adjust to match your plan.
@@ -283,6 +288,11 @@ class WorkflowEngine:
             await self._log_message(workflow_id, AgentRole.QA, None, test_report, MessageType.RESULT, output_key="test_report")
             await self._store_step_memory(workflow_id, "test_report", test_report, 0.7, upstream=["frontend", "backend"])
 
+            # ─── Step 9b: Collaboration loop ────────────────────────────
+            # Route Security + QA findings back to the responsible engineers
+            # for a structured fix pass (real agent negotiation, not just storage).
+            await self._apply_feedback_loop(workflow_id, frontend_code, backend_code, architecture)
+
             # ─── Step 10: Reviewer reviews everything ──────────────────
             await self._update_agent_status(workflow_id, AgentRole.REVIEWER, "Reviewing all outputs...")
             reviewer = self.agents[AgentRole.REVIEWER]
@@ -334,6 +344,62 @@ class WorkflowEngine:
             wf["error"] = str(e)
             wf["updated_at"] = datetime.utcnow()
             await self._log_message(workflow_id, AgentRole.CEO, None, f"Workflow failed: {e}", MessageType.LOG)
+
+    async def _apply_feedback_loop(
+        self,
+        workflow_id: str,
+        frontend_code: str,
+        backend_code: str,
+        architecture: str,
+    ) -> None:
+        """Route Security + QA findings back to the responsible engineers.
+
+        This is the "agents negotiate / retry failures" collaboration step: instead
+        of only storing the audit/test reports, the Frontend and Backend engineers
+        receive the feedback and return revised code, which replaces the original
+        artifacts and is re-logged as a new message.
+        """
+        wf = self.workflows[workflow_id]
+        feedback_parts = []
+        if wf["outputs"].get("security_report"):
+            feedback_parts.append("SECURITY AUDIT FINDINGS:\n" + wf["outputs"]["security_report"])
+        if wf["outputs"].get("test_report"):
+            feedback_parts.append("QA FINDINGS:\n" + wf["outputs"]["test_report"])
+        if not feedback_parts:
+            return
+
+        combined_feedback = "\n\n".join(feedback_parts)
+        wf["progress"] = 0.86
+        try:
+            await self._update_agent_status(workflow_id, AgentRole.FRONTEND, "Addressing feedback...")
+            await self._update_agent_status(workflow_id, AgentRole.BACKEND, "Addressing feedback...")
+
+            frontend_agent = self.agents[AgentRole.FRONTEND]
+            backend_agent = self.agents[AgentRole.BACKEND]
+
+            fixed_frontend = await frontend_agent.fix_issues(combined_feedback, frontend_code, architecture)
+            fixed_backend = await backend_agent.fix_issues(combined_feedback, backend_code, architecture)
+
+            wf["outputs"]["frontend"] = fixed_frontend
+            wf["outputs"]["backend"] = fixed_backend
+            wf["progress"] = 0.88
+            self._record_usage(workflow_id, AgentRole.FRONTEND)
+            self._record_usage(workflow_id, AgentRole.BACKEND)
+            await self._log_message(
+                workflow_id, AgentRole.FRONTEND, AgentRole.SECURITY,
+                fixed_frontend, MessageType.RESULT, output_key="frontend",
+            )
+            await self._log_message(
+                workflow_id, AgentRole.BACKEND, AgentRole.QA,
+                fixed_backend, MessageType.RESULT, output_key="backend",
+            )
+            await self._store_step_memory(workflow_id, "frontend", fixed_frontend, 0.8, upstream=["security_report", "test_report"])
+            await self._store_step_memory(workflow_id, "backend", fixed_backend, 0.8, upstream=["security_report", "test_report"])
+        except Exception as exc:  # noqa: BLE001 - feedback is best-effort; keep original code
+            await self._log_message(
+                workflow_id, AgentRole.CEO, None,
+                f"Feedback loop skipped: {exc}", MessageType.LOG,
+            )
 
     async def approve_workflow(self, workflow_id: str) -> WorkflowStatus:
         """Approve a workflow that's waiting for human approval."""
@@ -561,6 +627,17 @@ class WorkflowEngine:
         agent_stats["tokens"] += total
         agent_stats["cost"] += cost
         agent_stats["calls"] += 1
+
+        # Enforce the per-workflow token budget. Raising here lets the pipeline's
+        # outer except block mark the workflow FAILED with a clear reason.
+        if cm.total_tokens > settings.MAX_TOKENS_PER_WORKFLOW:
+            wf = self.workflows.get(workflow_id)
+            if wf is not None:
+                wf["error"] = (
+                    f"Token budget exceeded: {cm.total_tokens} > "
+                    f"{settings.MAX_TOKENS_PER_WORKFLOW}"
+                )
+            raise BudgetExceeded(wf["error"] if wf else "token budget exceeded")
 
     async def _log_message(
         self,

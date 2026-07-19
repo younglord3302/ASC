@@ -146,3 +146,28 @@ def test_dashboard_deployment_aggregates():
         resp = client.get("/api/v1/dashboard/deployment")
         assert resp.status_code == 200
         assert "build_status" in resp.json()
+
+
+def test_audit_log_returns_events(mock_llm):
+    """V2.3: GET /api/v1/audit returns recorded audit events (requires auth)."""
+    from app.main import app
+    from app.core import audit as audit_mod
+
+    async def _seed():
+        await audit_mod.record("test.event", "tester", "audit log seeded")
+
+    asyncio.new_event_loop().run_until_complete(_seed())
+    with TestClient(app) as client:
+        client.post(
+            "/api/v1/auth/register",
+            json={"email": "audit-reader@asc.io", "password": "pw12345"},
+        )
+        tok = client.post(
+            "/api/v1/auth/login",
+            json={"email": "audit-reader@asc.io", "password": "pw12345"},
+        ).json()["access_token"]
+        r = client.get("/api/v1/audit", headers={"Authorization": f"Bearer {tok}"})
+        assert r.status_code == 200
+        body = r.json()
+        assert "events" in body
+        assert any(e["action"] == "test.event" for e in body["events"])

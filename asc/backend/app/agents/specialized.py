@@ -223,6 +223,22 @@ Generate:
 6. Key pages with full implementation"""
         return await self.think(prompt)
 
+    async def fix_issues(self, feedback: str, current_code: str, architecture: str) -> str:
+        """Revise existing frontend code to address review/QA/security feedback."""
+        prompt = f"""Address the following feedback on the frontend code and return the REVISED code.
+
+Architecture context:
+{architecture}
+
+Feedback to address:
+{feedback}
+
+Current code:
+{current_code}
+
+Return the improved code, keeping what already works and fixing only the issues raised."""
+        return await self.think(prompt)
+
 
 # ─── 7. Backend Engineer Agent ──────────────────────────────────────────────
 
@@ -257,6 +273,22 @@ Generate:
 5. Database models and migrations
 6. Background job handlers
 7. Middleware (logging, rate limiting, etc.)"""
+        return await self.think(prompt)
+
+    async def fix_issues(self, feedback: str, current_code: str, architecture: str) -> str:
+        """Revise existing backend code to address review/QA/security feedback."""
+        prompt = f"""Address the following feedback on the backend code and return the REVISED code.
+
+Architecture context:
+{architecture}
+
+Feedback to address:
+{feedback}
+
+Current code:
+{current_code}
+
+Return the improved code, keeping what already works and fixing only the issues raised."""
         return await self.think(prompt)
 
 

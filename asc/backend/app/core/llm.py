@@ -1,5 +1,6 @@
 """LLM client abstraction layer supporting Qwen and OpenAI-compatible APIs."""
 
+import asyncio
 import httpx
 from typing import Optional
 from app.core.config import settings
@@ -79,17 +80,27 @@ class LLMClient:
             "stream": stream,
         }
 
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(
-                f"{self.api_base}/chat/completions",
-                headers=headers,
-                json=payload,
-            )
-            response.raise_for_status()
-            data = response.json()
-            content = data["choices"][0]["message"]["content"]
-            usage = _normalize_usage(data.get("usage"))
-            return content, usage
+        last_err: Optional[Exception] = None
+        for attempt in range(1, settings.LLM_MAX_RETRIES + 1):
+            try:
+                async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT) as client:
+                    response = await client.post(
+                        f"{self.api_base}/chat/completions",
+                        headers=headers,
+                        json=payload,
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    content = data["choices"][0]["message"]["content"]
+                    usage = _normalize_usage(data.get("usage"))
+                    return content, usage
+            except Exception as exc:  # noqa: BLE001 - retry on any transient failure
+                last_err = exc
+                if attempt < settings.LLM_MAX_RETRIES:
+                    await asyncio.sleep(settings.LLM_RETRY_BACKOFF * attempt)
+        raise RuntimeError(
+            f"LLM call failed after {settings.LLM_MAX_RETRIES} attempts: {last_err}"
+        )
 
     async def chat_with_tools(
         self,

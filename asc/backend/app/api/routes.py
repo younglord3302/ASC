@@ -1,6 +1,6 @@
 """FastAPI routes for the ASC platform."""
 
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Depends
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Depends, Request
 from pydantic import BaseModel
 from typing import Optional
 import json
@@ -16,6 +16,8 @@ from app.memory.memory_system import memory_system
 from app.core import users as user_store
 from app.core.security import create_access_token
 from app.api.deps import get_current_user
+from app.api.limiter import limiter
+from app.core import audit
 
 router = APIRouter(prefix="/api/v1")
 
@@ -23,7 +25,8 @@ router = APIRouter(prefix="/api/v1")
 # ─── Authentication Endpoints ────────────────────────────────────────────────
 
 @router.post("/auth/register", response_model=UserResponse, status_code=201)
-async def register(payload: UserCreate):
+@limiter.limit("20/minute")
+async def register(request: Request, payload: UserCreate):
     """Register a new user account."""
     if not payload.email or not payload.password:
         raise HTTPException(status_code=422, detail="Email and password are required")
@@ -35,6 +38,7 @@ async def register(payload: UserCreate):
         )
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
+    await audit.record("user.register", payload.email, "new account created")
     return UserResponse(
         id=user["id"],
         email=user["email"],
@@ -44,11 +48,14 @@ async def register(payload: UserCreate):
 
 
 @router.post("/auth/login", response_model=Token)
-async def login(payload: UserLogin):
+@limiter.limit("30/minute")
+async def login(request: Request, payload: UserLogin):
     """Authenticate and return a JWT access token."""
     user = await user_store.authenticate_user(payload.email, payload.password)
     if user is None:
+        await audit.record("user.login", payload.email, "failed login", level="warn")
         raise HTTPException(status_code=401, detail="Incorrect email or password")
+    await audit.record("user.login", payload.email, "successful login")
     token = create_access_token({"sub": user["email"]})
     return Token(access_token=token)
 
@@ -62,17 +69,25 @@ async def me(current_user: UserResponse = Depends(get_current_user)):
 # ─── Workflow Endpoints ──────────────────────────────────────────────────────
 
 @router.post("/workflows", response_model=WorkflowStatus)
+@limiter.limit("10/minute")
 async def create_workflow(
-    request: WorkflowRequest,
+    request: Request,
+    payload: WorkflowRequest,
     current_user: UserResponse = Depends(get_current_user),
 ):
     """Start a new software development workflow."""
     try:
-        return await workflow_engine.start_workflow(
-            user_prompt=request.user_prompt,
-            mode=request.mode,
-            project_name=request.project_name,
+        status = await workflow_engine.start_workflow(
+            user_prompt=payload.user_prompt,
+            mode=payload.mode,
+            project_name=payload.project_name,
         )
+        await audit.record(
+            "workflow.start",
+            current_user.email,
+            f"{status.workflow_id} mode={payload.mode.value}",
+        )
+        return status
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -93,7 +108,9 @@ async def approve_workflow(
 ):
     """Approve a workflow that's waiting for human approval."""
     try:
-        return await workflow_engine.approve_workflow(workflow_id)
+        result = await workflow_engine.approve_workflow(workflow_id)
+        await audit.record("workflow.approve", current_user.email, workflow_id)
+        return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -115,6 +132,11 @@ async def create_background_workflow(
             user_prompt=request.user_prompt,
             mode=request.mode.value,
             project_name=request.project_name,
+        )
+        await audit.record(
+            "workflow.enqueue",
+            current_user.email,
+            f"celery task {async_result.id} mode={request.mode.value}",
         )
         return {"task_id": async_result.id, "status": "queued"}
     except Exception as e:
@@ -170,7 +192,13 @@ async def deploy_workflow(
 ):
     """Deploy a completed workflow (simulated)."""
     try:
-        return await workflow_engine.deploy_workflow(workflow_id)
+        result = await workflow_engine.deploy_workflow(workflow_id)
+        await audit.record(
+            "workflow.deploy",
+            current_user.email,
+            f"{workflow_id} -> {result.get('deployments', [{}])[0].get('env')}",
+        )
+        return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -422,6 +450,16 @@ async def health_check():
             if wf["state"].value in ("running", "waiting_approval")
         ),
     }
+
+
+@router.get("/audit")
+async def get_audit_log(
+    limit: int = 100,
+    action: Optional[str] = None,
+    _: UserResponse = Depends(get_current_user),
+):
+    """Return recent audit events (PRD: Audit logging)."""
+    return {"events": audit.get_events(limit=limit, action=action)}
 
 
 # ─── WebSocket for real-time updates ─────────────────────────────────────────

@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     QWEN_API_KEY: Optional[str] = None
     QWEN_MODEL: str = "qwen-plus"
     QWEN_API_BASE: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    # Resilience: retries with exponential backoff for transient provider errors.
+    LLM_MAX_RETRIES: int = 3
+    LLM_RETRY_BACKOFF: float = 1.0
+    LLM_TIMEOUT: float = 120.0
 
     # Memory
     QDRANT_URL: str = "http://localhost:6333"
@@ -50,6 +54,10 @@ class Settings(BaseSettings):
     # Security
     SECRET_KEY: str = "change-me-in-production"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+
+    # Cost control: hard ceiling on tokens consumed by a single workflow. When
+    # exceeded the engine stops and flags the run instead of running unbounded.
+    MAX_TOKENS_PER_WORKFLOW: int = 2_000_000
 
     # CORS: comma-separated list of allowed browser origins. Defaults to the
     # local dev trio; in production set CORS_ORIGINS to your real dashboard URL.

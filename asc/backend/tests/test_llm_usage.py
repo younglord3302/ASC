@@ -52,3 +52,45 @@ def test_none_valued_fields_coerced_to_zero():
         "completion_tokens": 0,
         "total_tokens": 0,
     }
+
+
+def test_chat_with_usage_retries_then_succeeds(monkeypatch):
+    """V2.1: transient failures are retried with backoff."""
+    import asyncio
+    import app.core.llm as llm_mod
+    from app.core.config import settings
+
+    settings.LLM_MAX_RETRIES = 3
+    settings.LLM_RETRY_BACKOFF = 0.0  # no real sleep in tests
+    settings.LLM_TIMEOUT = 5.0
+
+    call_count = 0
+
+    class FakeResp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            }
+
+    async def fake_post(self, *args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count < 3:
+            raise RuntimeError("transient provider error")
+        return FakeResp()
+
+    monkeypatch.setattr(llm_mod.httpx.AsyncClient, "post", fake_post)
+
+    async def run():
+        client = llm_mod.LLMClient(api_key="k", api_base="http://x")
+        content, usage = await client.chat_with_usage([{"role": "user", "content": "hi"}])
+        return content, usage
+
+    content, usage = asyncio.run(run())
+    assert content == "ok"
+    assert usage["total_tokens"] == 15
+    assert call_count == 3
