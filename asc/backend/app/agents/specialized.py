@@ -432,6 +432,20 @@ Include:
 6. Test coverage report"""
         return await self.think(prompt)
 
+    async def code_metrics(self, code: str) -> dict:
+        """Compute deterministic size metrics for generated code via a tool.
+
+        Demonstrates real tool usage inside the pipeline: rather than asking the
+        LLM to (unreliably) count things, the agent calls the registered
+        ``word_count`` tool and returns structured, verifiable numbers.
+        """
+        result = await self.use_tool("word_count", {"text": code})
+        if not result.get("ok"):
+            return {"words": 0, "characters": 0, "lines": 0}
+        metrics = dict(result["result"])
+        metrics["lines"] = code.count("\n") + 1 if code else 0
+        return metrics
+
 
 # ─── 12. Reviewer Agent ─────────────────────────────────────────────────────
 

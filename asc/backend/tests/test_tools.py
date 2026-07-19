@@ -77,3 +77,42 @@ async def test_base_agent_use_tool():
 
     out = await agent.use_tool("calculator", {"expression": "10 / 2"})
     assert out == {"ok": True, "result": 5.0}
+
+
+async def test_qa_agent_code_metrics_uses_tool():
+    """V4.2: QAAgent.code_metrics returns real, tool-computed numbers."""
+    from app.agents.specialized import QAAgent
+
+    qa = QAAgent()
+    await qa.initialize("sess-metrics")
+    metrics = await qa.code_metrics("def foo():\n    return 1\n")
+    assert metrics["words"] == 4  # def foo(): return 1
+    assert metrics["lines"] == 3
+    assert metrics["characters"] > 0
+
+
+def test_pipeline_records_tool_code_metrics(mock_llm):
+    """V4.2: an autonomous workflow stores tool-computed code metrics."""
+    import asyncio
+    from app.workflow.engine import workflow_engine, WorkflowState
+    from app.models.schemas import WorkflowMode
+
+    async def _run():
+        status = await workflow_engine.start_workflow(
+            "Build a small app", mode=WorkflowMode.AUTONOMOUS, user_id="metrics-user"
+        )
+        wid = status.workflow_id
+        for _ in range(6000):
+            if workflow_engine.workflows[wid]["state"] in (
+                WorkflowState.COMPLETED,
+                WorkflowState.FAILED,
+            ):
+                break
+            await asyncio.sleep(0.01)
+        return wid
+
+    wid = asyncio.new_event_loop().run_until_complete(_run())
+    outputs = workflow_engine.workflows[wid]["outputs"]
+    assert "code_metrics" in outputs
+    assert set(outputs["code_metrics"]) >= {"words", "characters", "lines"}
+    assert outputs["code_metrics"]["characters"] > 0

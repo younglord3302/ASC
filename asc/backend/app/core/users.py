@@ -60,6 +60,7 @@ def _to_dict(user: UserModel) -> dict:
         "hashed_password": user.hashed_password,
         "full_name": user.full_name,
         "is_active": user.is_active,
+        "role": getattr(user, "role", None) or "user",
     }
 
 
@@ -80,11 +81,37 @@ async def get_user_by_email(email: str) -> Optional[dict]:
     return _memory_users.get(email)
 
 
-async def create_user(email: str, password: str, full_name: Optional[str] = None) -> dict:
-    """Create a new user. Raises ValueError if the email already exists."""
+async def _has_any_user() -> bool:
+    """Return True if at least one user exists (DB first, then memory)."""
+    async def _q():
+        async with SessionLocal() as session:
+            row = (await session.execute(select(UserModel).limit(1))).scalar_one_or_none()
+            return row is not None
+
+    result = await _safe_db(_q)
+    if result is not _SENTINEL:
+        return bool(result)
+    return len(_memory_users) > 0
+
+
+async def create_user(
+    email: str,
+    password: str,
+    full_name: Optional[str] = None,
+    role: Optional[str] = None,
+) -> dict:
+    """Create a new user. Raises ValueError if the email already exists.
+
+    The very first user created in the system is bootstrapped as an ``admin``
+    so there is always someone who can manage the platform; every subsequent
+    user defaults to ``user`` unless an explicit role is provided.
+    """
     existing = await get_user_by_email(email)
     if existing is not None:
         raise ValueError("A user with this email already exists")
+
+    if role is None:
+        role = "admin" if not await _has_any_user() else "user"
 
     record = {
         "id": str(uuid.uuid4()),
@@ -92,6 +119,7 @@ async def create_user(email: str, password: str, full_name: Optional[str] = None
         "hashed_password": get_password_hash(password),
         "full_name": full_name,
         "is_active": True,
+        "role": role,
     }
 
     async def _insert():
@@ -103,6 +131,7 @@ async def create_user(email: str, password: str, full_name: Optional[str] = None
                     hashed_password=record["hashed_password"],
                     full_name=record["full_name"],
                     is_active=record["is_active"],
+                    role=record["role"],
                 )
             )
             await session.commit()
@@ -124,3 +153,16 @@ async def authenticate_user(email: str, password: str) -> Optional[dict]:
     if not verify_password(password, user["hashed_password"]):
         return None
     return user
+
+
+async def list_users() -> list[dict]:
+    """Return all users (DB first, then in-memory fallback). Admin use only."""
+    async def _q():
+        async with SessionLocal() as session:
+            rows = (await session.execute(select(UserModel))).scalars().all()
+            return [_to_dict(r) for r in rows]
+
+    result = await _safe_db(_q)
+    if result is not _SENTINEL:
+        return result
+    return list(_memory_users.values())

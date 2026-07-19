@@ -163,6 +163,11 @@ class DeploymentStatus(BaseModel):
 
 # --- Authentication ---
 
+class UserRole(str, Enum):
+    ADMIN = "admin"
+    USER = "user"
+
+
 class UserCreate(BaseModel):
     email: str
     password: str
@@ -179,6 +184,7 @@ class UserResponse(BaseModel):
     email: str
     full_name: Optional[str] = None
     is_active: bool = True
+    role: UserRole = UserRole.USER
 
 
 class Token(BaseModel):

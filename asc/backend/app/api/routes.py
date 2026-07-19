@@ -15,7 +15,7 @@ from app.workflow.engine import workflow_engine
 from app.memory.memory_system import memory_system
 from app.core import users as user_store
 from app.core.security import create_access_token
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, require_admin
 from app.api.limiter import limiter
 from app.core import audit
 
@@ -500,10 +500,80 @@ async def health_check():
 async def get_audit_log(
     limit: int = 100,
     action: Optional[str] = None,
-    _: UserResponse = Depends(get_current_user),
+    _: UserResponse = Depends(require_admin),
 ):
-    """Return recent audit events (PRD: Audit logging)."""
+    """Return recent audit events (admin only; PRD: Audit logging)."""
     return {"events": audit.get_events(limit=limit, action=action)}
+
+
+# ─── Admin (V4.1 RBAC) ────────────────────────────────────────────────────────
+
+@router.get("/admin/users")
+async def admin_list_users(_: UserResponse = Depends(require_admin)):
+    """List all user accounts (admin only)."""
+    users = await user_store.list_users()
+    return {
+        "users": [
+            {
+                "id": u["id"],
+                "email": u["email"],
+                "full_name": u.get("full_name"),
+                "is_active": u.get("is_active", True),
+                "role": u.get("role", "user"),
+            }
+            for u in users
+        ]
+    }
+
+
+@router.get("/admin/workflows")
+async def admin_all_workflows(admin: UserResponse = Depends(require_admin)):
+    """List every workflow across all users (admin only)."""
+    await audit.record("admin.workflows.list", admin.email, "viewed all workflows")
+    try:
+        from sqlalchemy import select
+
+        from app.models.db_session import SessionLocal
+        from app.models.database import WorkflowModel, WorkflowState as DBState
+
+        combined: dict[str, dict] = {
+            wf["id"]: {
+                "id": wf["id"],
+                "user_id": wf.get("user_id"),
+                "project_name": wf["project_name"],
+                "status": wf["state"].value,
+                "progress": wf["progress"],
+                "current_agent": wf.get("current_agent"),
+            }
+            for wf in workflow_engine.workflows.values()
+        }
+        async with SessionLocal() as session:
+            rows = (await session.execute(select(WorkflowModel))).scalars().all()
+        for row in rows:
+            state_val = row.state.value if isinstance(row.state, DBState) else str(row.state)
+            combined[row.id] = {
+                "id": row.id,
+                "user_id": getattr(row, "user_id", None),
+                "project_name": row.project_name,
+                "status": state_val,
+                "progress": row.progress,
+                "current_agent": row.current_agent,
+            }
+        return {"workflows": list(combined.values())}
+    except Exception:
+        return {
+            "workflows": [
+                {
+                    "id": wf["id"],
+                    "user_id": wf.get("user_id"),
+                    "project_name": wf["project_name"],
+                    "status": wf["state"].value,
+                    "progress": wf["progress"],
+                    "current_agent": wf.get("current_agent"),
+                }
+                for wf in workflow_engine.workflows.values()
+            ]
+        }
 
 
 # ─── WebSocket for real-time updates ─────────────────────────────────────────

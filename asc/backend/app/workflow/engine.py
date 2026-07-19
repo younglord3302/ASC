@@ -299,6 +299,16 @@ class WorkflowEngine:
             await self._log_message(workflow_id, AgentRole.QA, None, test_report, MessageType.RESULT, output_key="test_report")
             await self._store_step_memory(workflow_id, "test_report", test_report, 0.7, upstream=["frontend", "backend"])
 
+            # ─── Step 9a: QA computes deterministic code metrics via a tool ──
+            # Real tool usage in the pipeline: the QA agent calls the registered
+            # word_count tool instead of asking the LLM to guess counts.
+            code_metrics = await qa_agent.code_metrics(frontend_code + "\n" + backend_code)
+            wf["outputs"]["code_metrics"] = code_metrics
+            await self._log_message(
+                workflow_id, AgentRole.QA, None,
+                f"Code metrics (via tool): {code_metrics}", MessageType.LOG,
+            )
+
             # ─── Step 9b: Collaboration loop ────────────────────────────
             # Route Security + QA findings back to the responsible engineers
             # for a structured fix pass (real agent negotiation, not just storage).

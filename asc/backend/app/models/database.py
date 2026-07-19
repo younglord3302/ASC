@@ -89,4 +89,5 @@ class UserModel(Base):
     hashed_password = Column(String(255), nullable=False)
     full_name = Column(String(255), nullable=True)
     is_active = Column(Boolean, default=True)
+    role = Column(String(20), default="user", nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)

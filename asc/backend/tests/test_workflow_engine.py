@@ -53,8 +53,10 @@ async def test_autonomous_mode_runs_to_completion(engine, mock_llm):
     final = await _wait_for(engine, wid, {"completed", "failed"})
     assert final.status == "completed"
     assert final.progress == 1.0
-    # All 13 pipeline outputs produced.
-    assert len(engine.workflows[wid]["outputs"]) == 13
+    # 13 LLM pipeline outputs + 1 tool-computed code_metrics output (V4.2).
+    outputs = engine.workflows[wid]["outputs"]
+    assert len(outputs) == 14
+    assert "code_metrics" in outputs
 
 
 async def test_token_and_cost_tracking_populated(engine, mock_llm):

@@ -17,6 +17,22 @@ def _silence_persistence_warnings():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _reset_user_store():
+    """Reset the in-memory user store between tests.
+
+    RBAC bootstraps the first-ever user as admin, so leaking users across tests
+    would make role assignment order-dependent. Clearing the store (and the
+    DB-disabled latch) keeps each test's auth deterministic.
+    """
+    import app.core.users as users
+
+    users._memory_users.clear()
+    users._db_disabled = False
+    yield
+    users._memory_users.clear()
+
+
 @pytest.fixture
 def mock_llm(monkeypatch):
     """Patch the LLM client so no network/API key is needed.
