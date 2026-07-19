@@ -4,6 +4,7 @@ import asyncio
 import httpx
 from typing import Optional
 from app.core.config import settings
+from app.core.tracing import span
 
 
 def _normalize_usage(usage: Optional[dict]) -> dict:
@@ -83,17 +84,21 @@ class LLMClient:
         last_err: Optional[Exception] = None
         for attempt in range(1, settings.LLM_MAX_RETRIES + 1):
             try:
-                async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT) as client:
-                    response = await client.post(
-                        f"{self.api_base}/chat/completions",
-                        headers=headers,
-                        json=payload,
-                    )
-                    response.raise_for_status()
-                    data = response.json()
-                    content = data["choices"][0]["message"]["content"]
-                    usage = _normalize_usage(data.get("usage"))
-                    return content, usage
+                with span(
+                    "llm.chat",
+                    {"llm.model": self.model, "llm.attempt": attempt},
+                ):
+                    async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT) as client:
+                        response = await client.post(
+                            f"{self.api_base}/chat/completions",
+                            headers=headers,
+                            json=payload,
+                        )
+                        response.raise_for_status()
+                        data = response.json()
+                        content = data["choices"][0]["message"]["content"]
+                        usage = _normalize_usage(data.get("usage"))
+                        return content, usage
             except Exception as exc:  # noqa: BLE001 - retry on any transient failure
                 last_err = exc
                 if attempt < settings.LLM_MAX_RETRIES:

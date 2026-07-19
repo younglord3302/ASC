@@ -164,9 +164,10 @@ class MemorySystem:
         graph = "neo4j" if (self._graph and self._graph.available) else "memory"
         return f"vector={vector},graph={graph}"
 
-    async def initialize(self, session_id: str):
-        """Initialize memory for a new session."""
+    async def initialize(self, session_id: str, user_id: Optional[str] = None):
+        """Initialize memory for a new session, optionally scoped to a user."""
         self._session_id = session_id
+        self._user_id = user_id
 
     async def store(
         self,
@@ -185,6 +186,7 @@ class MemorySystem:
             tags=tags or [],
             relationships=relationships or [],
             session_id=self._session_id,
+            user_id=getattr(self, "_user_id", None),
         )
         self._backend.add(entry)
 

@@ -74,6 +74,7 @@ async def save_workflow(wf: dict[str, Any]) -> None:
             if row is None:
                 row = WorkflowModel(
                     id=wf["id"],
+                    user_id=wf.get("user_id"),
                     project_name=wf["project_name"],
                     user_prompt=wf["user_prompt"],
                     mode=mode_value,
@@ -92,6 +93,8 @@ async def save_workflow(wf: dict[str, Any]) -> None:
                 row.progress = wf.get("progress", 0.0)
                 row.current_agent = wf.get("current_agent")
                 row.error = wf.get("error")
+                if hasattr(row, "user_id"):
+                    row.user_id = wf.get("user_id")
                 row.updated_at = wf.get("updated_at", datetime.utcnow())
             await session.commit()
 
@@ -164,6 +167,7 @@ async def save_memory(entry: Any) -> None:
                     relationships=entry.relationships,
                     project_id=entry.project_id,
                     session_id=entry.session_id,
+                    user_id=getattr(entry, "user_id", None),
                     timestamp=entry.timestamp,
                     expiration=entry.expiration,
                 )

@@ -112,6 +112,7 @@ class MemoryEntry(BaseModel):
     expiration: Optional[datetime] = None
     project_id: Optional[str] = None
     session_id: Optional[str] = None
+    user_id: Optional[str] = None
 
 
 # --- Dashboard ---

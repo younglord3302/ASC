@@ -63,6 +63,14 @@ class Settings(BaseSettings):
     # local dev trio; in production set CORS_ORIGINS to your real dashboard URL.
     CORS_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000"
 
+    # Observability: OpenTelemetry tracing. Disabled by default so tests and
+    # local runs stay dependency-light. When enabled, spans are emitted for
+    # HTTP requests, workflow steps, and LLM calls. If OTEL_EXPORTER_OTLP is
+    # set, spans are exported via OTLP; otherwise they print to the console.
+    OTEL_ENABLED: bool = False
+    OTEL_SERVICE_NAME: str = "asc-backend"
+    OTEL_EXPORTER_OTLP: Optional[str] = None
+
     # Alibaba Cloud
     ALIBABA_ACCESS_KEY: Optional[str] = None
     ALIBABA_SECRET_KEY: Optional[str] = None

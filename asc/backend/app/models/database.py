@@ -23,6 +23,7 @@ class WorkflowModel(Base):
     __tablename__ = "workflows"
 
     id = Column(String(36), primary_key=True)
+    user_id = Column(String(36), nullable=True, index=True)
     project_name = Column(String(255), nullable=False)
     user_prompt = Column(Text, nullable=False)
     mode = Column(String(50), default="approval")
@@ -75,6 +76,7 @@ class MemoryModel(Base):
     relationships = Column(JSON, default=list)
     project_id = Column(String(36), nullable=True)
     session_id = Column(String(36), nullable=True)
+    user_id = Column(String(36), nullable=True, index=True)
     timestamp = Column(DateTime, default=datetime.utcnow)
     expiration = Column(DateTime, nullable=True)
 

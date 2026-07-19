@@ -62,6 +62,22 @@ class BaseAgent:
         self.status = AgentStatus.DONE
         return response
 
+    def available_tools(self) -> list[dict]:
+        """Return the tool schemas this agent can call (LLM tool-calling format)."""
+        from app.tools import registry
+
+        return registry.openai_schema()
+
+    async def use_tool(self, name: str, arguments: Optional[dict] = None) -> dict:
+        """Execute a registered tool by name, returning a structured result.
+
+        Never raises: returns ``{"ok": False, "error": ...}`` on failure so a
+        misbehaving tool can't crash the agent pipeline.
+        """
+        from app.tools import registry
+
+        return await registry.safe_execute(name, arguments or {})
+
     def create_message(
         self,
         to_agent: AgentRole,

@@ -10,6 +10,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from app.core.config import settings
 from app.api.routes import router
 from app.api.limiter import limiter
+from app.core.tracing import setup_tracing, span
 from app.models.db_session import init_db
 
 logger = logging.getLogger("asc")
@@ -22,6 +23,7 @@ logger = logging.getLogger("asc")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize resources on startup (best-effort DB table creation)."""
+    setup_tracing()
     try:
         await init_db()
         logger.info("Database initialized")
@@ -65,6 +67,17 @@ app.add_middleware(
 
 # Include API routes
 app.include_router(router)
+
+
+# Request-level tracing. When OTEL is disabled this middleware is effectively a
+# no-op (the span() helper yields immediately), so it adds negligible overhead.
+@app.middleware("http")
+async def _trace_requests(request: Request, call_next):
+    with span(
+        f"HTTP {request.method} {request.url.path}",
+        {"http.method": request.method, "http.route": request.url.path},
+    ):
+        return await call_next(request)
 
 # Prometheus metrics are exposed at the conventional root path so the
 # scrape config in infrastructure/docker-compose.yml (metrics_path: /metrics)
