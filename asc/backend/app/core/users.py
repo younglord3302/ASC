@@ -6,6 +6,7 @@ in-process dict keeps auth working. This mirrors the best-effort philosophy of
 the rest of the persistence layer.
 """
 
+import asyncio
 import logging
 import uuid
 from typing import Optional
@@ -21,6 +22,36 @@ logger = logging.getLogger("asc.users")
 # In-memory fallback store: email -> record dict
 _memory_users: dict[str, dict] = {}
 
+# Once a DB connection attempt fails we stop trying for the lifetime of the
+# process. This mirrors app.models.persistence: a slow/unreachable Postgres must
+# never block auth endpoints (register/login/me) on the same event loop.
+_db_disabled = False
+_DB_TIMEOUT = 3.0
+
+
+async def _safe_db(make_coro):
+    """Run a DB coroutine (built lazily) with a timeout, returning its value or
+    ``_SENTINEL`` if it failed/timed out. After the first failure, DB access is
+    disabled entirely so subsequent calls fall straight through to memory. The
+    coroutine is built lazily so a disabled DB doesn't leave an unawaited
+    coroutine behind."""
+    global _db_disabled
+    if _db_disabled:
+        return _SENTINEL
+    try:
+        return await asyncio.wait_for(make_coro(), timeout=_DB_TIMEOUT)
+    except Exception as exc:  # noqa: BLE001 - fall back to in-memory users
+        _db_disabled = True
+        logger.debug("user DB access disabled (database unavailable): %s", exc)
+        return _SENTINEL
+
+
+class _Sentinel:
+    pass
+
+
+_SENTINEL = _Sentinel()
+
 
 def _to_dict(user: UserModel) -> dict:
     return {
@@ -34,17 +65,18 @@ def _to_dict(user: UserModel) -> dict:
 
 async def get_user_by_email(email: str) -> Optional[dict]:
     """Return the user record for an email, or None. Tries DB, then memory."""
-    try:
+    async def _q():
         async with SessionLocal() as session:
             row = (
                 await session.execute(
                     select(UserModel).where(UserModel.email == email)
                 )
             ).scalar_one_or_none()
-            if row is not None:
-                return _to_dict(row)
-    except Exception as exc:  # noqa: BLE001 - fall back to memory
-        logger.debug("get_user_by_email DB lookup failed, using memory: %s", exc)
+            return _to_dict(row) if row is not None else _SENTINEL
+
+    result = await _safe_db(_q)
+    if result is not _SENTINEL:
+        return result
     return _memory_users.get(email)
 
 
@@ -62,8 +94,7 @@ async def create_user(email: str, password: str, full_name: Optional[str] = None
         "is_active": True,
     }
 
-    persisted = False
-    try:
+    async def _insert():
         async with SessionLocal() as session:
             session.add(
                 UserModel(
@@ -75,11 +106,10 @@ async def create_user(email: str, password: str, full_name: Optional[str] = None
                 )
             )
             await session.commit()
-            persisted = True
-    except Exception as exc:  # noqa: BLE001 - fall back to memory
-        logger.debug("create_user DB write failed, using memory: %s", exc)
 
-    if not persisted:
+    # A failure here is swallowed by _safe_db; we then keep the user in memory.
+    await _safe_db(_insert)
+    if email not in _memory_users:
         _memory_users[email] = record
     return record
 

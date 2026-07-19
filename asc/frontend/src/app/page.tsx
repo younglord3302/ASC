@@ -40,6 +40,7 @@ import {
   fetchMe,
   type CurrentUser,
 } from "@/lib/auth";
+import { useLiveWorkflow } from "@/lib/useLiveWorkflow";
 import LoginForm from "@/components/LoginForm";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -58,6 +59,7 @@ interface Workflow {
   status: string;
   progress: number;
   current_agent: string | null;
+  error?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -179,6 +181,9 @@ function WorkflowCard({
         </span>
       </div>
       <ProgressBar value={workflow.progress} className="mb-2" />
+      {workflow.status === "failed" && workflow.error && (
+        <p className="text-[11px] text-red-600 mb-2 line-clamp-2">{workflow.error}</p>
+      )}
       <div className="flex items-center justify-between text-xs text-surface-500">
         <span>
           <Clock className="w-3 h-3 inline mr-1" />
@@ -369,6 +374,22 @@ export default function Dashboard() {
       return next;
     });
   }, [fetchMessages]);
+
+  // Merge a live WebSocket frame into local state for the selected workflow.
+  const mergeLive = useCallback((update: any) => {
+    if (update.progress != null) {
+      setWorkflows((prev) =>
+        prev.map((w) =>
+          w.id === selectedWf ? { ...w, progress: update.progress, current_agent: update.current_agent ?? w.current_agent } : w,
+        ),
+      );
+    }
+    if (Array.isArray(update.messages) && update.messages.length > 0) {
+      setWfMessages(update.messages);
+    }
+  }, [selectedWf]);
+
+  useLiveWorkflow(selectedWf, mergeLive);
 
   const fetchRelated = useCallback(async (id: string, content: string) => {
     setRelSource({ id, content });

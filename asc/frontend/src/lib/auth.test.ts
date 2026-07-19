@@ -10,6 +10,9 @@ import {
   register,
   fetchMe,
   API_BASE,
+  WS_BASE,
+  wsUrl,
+  deriveWsBase,
   ApiError,
 } from "@/lib/auth";
 
@@ -131,5 +134,22 @@ describe("auth flows", () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe(`${API_BASE}/auth/me`);
     expect(init.headers.Authorization).toBe("Bearer tok");
+  });
+});
+
+describe("websocket url derivation", () => {
+  // The WebSocket route lives at /api/v1/ws/{id}, so the derived base must
+  // keep the /api/v1 prefix (the REST API base already includes it).
+  it("derives a ws:// base from an http API base", () => {
+    expect(deriveWsBase("http://localhost:8000/api/v1")).toBe("ws://localhost:8000/api/v1");
+    expect(wsUrl("/ws/abc")).toBe(`${WS_BASE}/ws/abc`);
+  });
+
+  it("derives a wss:// base from an https API base", () => {
+    expect(deriveWsBase("https://api.example.com/api/v1")).toBe("wss://api.example.com/api/v1");
+  });
+
+  it("strips a trailing slash", () => {
+    expect(deriveWsBase("http://localhost:8000/")).toBe("ws://localhost:8000");
   });
 });

@@ -30,10 +30,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS middleware
+# CORS middleware. Restrict to configured origins (never the wildcard when
+# credentials are allowed) so browser auth works and we don't open the API to
+# every origin in production.
+cors_origins = [o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -41,6 +44,25 @@ app.add_middleware(
 
 # Include API routes
 app.include_router(router)
+
+# Prometheus metrics are exposed at the conventional root path so the
+# scrape config in infrastructure/docker-compose.yml (metrics_path: /metrics)
+# resolves without an /api/v1 prefix.
+try:
+    from app.api.routes import _collect_metrics, _METRICS_AVAILABLE
+    from fastapi.responses import Response
+    from prometheus_client import CONTENT_TYPE_LATEST
+
+    @app.get("/metrics")
+    async def metrics_root():
+        if not _METRICS_AVAILABLE:
+            return Response(
+                "# metrics unavailable (prometheus_client missing)\n",
+                media_type="text/plain",
+            )
+        return Response(_collect_metrics(), media_type=CONTENT_TYPE_LATEST)
+except Exception:  # noqa: BLE001 - metrics are optional
+    pass
 
 
 @app.get("/")

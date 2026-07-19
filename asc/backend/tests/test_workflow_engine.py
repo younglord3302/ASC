@@ -89,3 +89,32 @@ async def test_approve_unknown_workflow_raises(engine):
 async def test_get_status_unknown_workflow_raises(engine):
     with pytest.raises(ValueError):
         await engine.get_workflow_status("nope")
+
+
+async def test_prior_context_is_captured_into_workflow(engine, mock_llm):
+    """Regression: prior-project memory must be stored as wf['context'].
+
+    Previously the context was assigned to the workflow dict *before* that dict
+    was created, raising KeyError (silently swallowed), so the CEO never
+    received cross-project learning. The context must survive into start_workflow.
+    """
+    from app.memory.memory_system import memory_system
+
+    await memory_system.initialize("prior-session")
+    await memory_system.store(
+        "Preferred stack: Next.js + FastAPI + Postgres for SaaS apps",
+        memory_type="long_term",
+        importance=0.9,
+        tags=["preferred_stack", "saas"],
+    )
+    # Ensure the recall returns something relevant for the query used at startup.
+    recalled = await memory_system.recall(
+        "preferred stack for: Build a SaaS dashboard", semantic=True
+    )
+    assert recalled, "seed memory should be recallable"
+
+    status = await engine.start_workflow("Build a SaaS dashboard", mode=WorkflowMode.APPROVAL)
+    wid = status.workflow_id
+    wf = engine.workflows[wid]
+    assert wf.get("context"), "prior context must be captured into the workflow"
+    assert "Next.js" in wf["context"]

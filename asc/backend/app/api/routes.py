@@ -255,19 +255,59 @@ async def dashboard_agents():
 
 @router.get("/dashboard/workflows")
 async def dashboard_workflows():
-    """Get all workflow summaries for the dashboard."""
-    return [
-        {
-            "id": wf["id"],
-            "project_name": wf["project_name"],
-            "status": wf["state"].value,
-            "progress": wf["progress"],
-            "current_agent": wf.get("current_agent"),
-            "created_at": wf["created_at"].isoformat(),
-            "updated_at": wf["updated_at"].isoformat(),
+    """Get all workflow summaries for the dashboard.
+
+    Combines in-memory workflows (owned by this API process) with any workflows
+    persisted by other processes (e.g. the Celery worker) so background runs are
+    visible on the dashboard too. Persisted rows win on conflict.
+    """
+    try:
+        from sqlalchemy import select
+
+        from app.models.db_session import SessionLocal
+        from app.models.database import WorkflowModel, WorkflowState as DBState
+
+        in_memory = {
+            wf["id"]: {
+                "id": wf["id"],
+                "project_name": wf["project_name"],
+                "status": wf["state"].value,
+                "progress": wf["progress"],
+                "current_agent": wf.get("current_agent"),
+                "created_at": wf["created_at"].isoformat(),
+                "updated_at": wf["updated_at"].isoformat(),
+            }
+            for wf in workflow_engine.workflows.values()
         }
-        for wf in workflow_engine.workflows.values()
-    ]
+
+        async with SessionLocal() as session:
+            rows = (await session.execute(select(WorkflowModel))).scalars().all()
+        for row in rows:
+            state_val = row.state.value if isinstance(row.state, DBState) else str(row.state)
+            in_memory[row.id] = {
+                "id": row.id,
+                "project_name": row.project_name,
+                "status": state_val,
+                "progress": row.progress,
+                "current_agent": row.current_agent,
+                "created_at": row.created_at.isoformat() if row.created_at else "",
+                "updated_at": row.updated_at.isoformat() if row.updated_at else "",
+            }
+        return list(in_memory.values())
+    except Exception:
+        # Database unavailable -> fall back to in-memory workflows only.
+        return [
+            {
+                "id": wf["id"],
+                "project_name": wf["project_name"],
+                "status": wf["state"].value,
+                "progress": wf["progress"],
+                "current_agent": wf.get("current_agent"),
+                "created_at": wf["created_at"].isoformat(),
+                "updated_at": wf["updated_at"].isoformat(),
+            }
+            for wf in workflow_engine.workflows.values()
+        ]
 
 
 @router.get("/dashboard/costs")
@@ -324,6 +364,51 @@ async def dashboard_deployment():
     }
 
 
+# ─── Metrics (Prometheus) ────────────────────────────────────────────────────
+
+try:
+    from prometheus_client import (
+        CONTENT_TYPE_LATEST,
+        Gauge,
+        generate_latest,
+    )
+
+    _g_workflows = Gauge(
+        "asc_workflows_total", "Number of workflows by state", ["state"]
+    )
+    _g_agents = Gauge(
+        "asc_agents_total", "Number of agents by status", ["status"]
+    )
+
+    def _collect_metrics() -> bytes:
+        _g_workflows.clear()
+        for wf in workflow_engine.workflows.values():
+            _g_workflows.labels(state=wf["state"].value).inc()
+        _g_agents.clear()
+        for agent in workflow_engine.agents.values():
+            _g_agents.labels(status=agent.status.value).inc()
+        return generate_latest()
+
+    _METRICS_AVAILABLE = True
+except Exception:  # noqa: BLE001 - metrics are optional
+    _METRICS_AVAILABLE = False
+
+
+@router.get("/metrics")
+async def metrics():
+    """Expose Prometheus-format metrics (workflow/agent gauges)."""
+    if not _METRICS_AVAILABLE:
+        from fastapi import Response
+
+        return Response(
+            "# metrics unavailable (prometheus_client missing)\n",
+            media_type="text/plain",
+        )
+    from fastapi import Response
+
+    return Response(_collect_metrics(), media_type=CONTENT_TYPE_LATEST)
+
+
 # ─── Health Check ────────────────────────────────────────────────────────────
 
 @router.get("/health")
@@ -363,6 +448,16 @@ async def websocket_endpoint(websocket: WebSocket, workflow_id: str):
                         for m in workflow_engine.messages.get(workflow_id, [])[-5:]
                     ],
                 })
+            else:
+                # Unknown workflow: report an empty snapshot so clients don't
+                # block forever waiting for a message that will never arrive.
+                await websocket.send_json({
+                    "status": None,
+                    "progress": 0.0,
+                    "current_agent": None,
+                    "messages": [],
+                })
+                break
             await asyncio.sleep(1)
     except WebSocketDisconnect:
         pass

@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "change-me-in-production"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
 
+    # CORS: comma-separated list of allowed browser origins. Defaults to the
+    # local dev trio; in production set CORS_ORIGINS to your real dashboard URL.
+    CORS_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000"
+
     # Alibaba Cloud
     ALIBABA_ACCESS_KEY: Optional[str] = None
     ALIBABA_SECRET_KEY: Optional[str] = None

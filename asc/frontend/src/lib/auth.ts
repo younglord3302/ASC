@@ -8,6 +8,22 @@
 export const API_BASE =
   process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
 
+// Convert a REST API base (http(s)) into a WebSocket base (ws(s)).
+// The API base already includes the "/api/v1" prefix, which the WebSocket
+// route also expects (e.g. /api/v1/ws/{id}), so we keep it.
+export function deriveWsBase(apiBase: string): string {
+  const base = apiBase.replace(/\/$/, "");
+  if (base.startsWith("https://")) return "wss://" + base.slice("https://".length);
+  if (base.startsWith("http://")) return "ws://" + base.slice("http://".length);
+  return "ws://" + base;
+}
+
+export const WS_BASE: string = deriveWsBase(API_BASE);
+
+export function wsUrl(path: string): string {
+  return `${WS_BASE}${path}`;
+}
+
 const TOKEN_KEY = "asc_token";
 
 export function getToken(): string | null {

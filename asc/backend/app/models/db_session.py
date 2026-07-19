@@ -18,12 +18,19 @@ def _make_engine() -> AsyncEngine:
     """Create the async engine from the configured DATABASE_URL.
 
     The URL is expected to use an async driver (e.g. ``postgresql+asyncpg://``).
+
+    A short asyncpg connection timeout is configured so that an unreachable
+    database fails fast instead of hanging the event loop (which would otherwise
+    stall the entire workflow pipeline, since persistence is best-effort).
     """
+    connect_args = {"timeout": 3, "server_settings": {"application_name": "asc"}}
     return create_async_engine(
         settings.DATABASE_URL,
         echo=False,
         pool_pre_ping=True,
         future=True,
+        pool_timeout=3,
+        connect_args=connect_args,
     )
 
 

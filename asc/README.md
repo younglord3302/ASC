@@ -103,7 +103,7 @@ Working Memory → Session Memory → Project Memory → Organization Memory →
 | **Frontend** | Next.js 15, React 19, TypeScript, Tailwind CSS, Recharts |
 | **Backend** | FastAPI, Python 3.12, Celery, Redis |
 | **Database** | PostgreSQL 16, Qdrant (vectors), Neo4j (graph) |
-| **AI/LLM** | Qwen 3 (DashScope), LangGraph, LlamaIndex |
+| **AI/LLM** | Qwen (DashScope) OpenAI-compatible API |
 | **Infrastructure** | Docker, Docker Compose, Kubernetes, Prometheus, Grafana |
 | **Cloud** | Alibaba Cloud ECS, OSS, RDS, API Gateway |
 | **Storage** | MinIO (S3-compatible object storage) |
@@ -261,7 +261,24 @@ This starts all services: backend, frontend, PostgreSQL, Redis, Qdrant, Neo4j, M
 
 ---
 
-## 📄 License
+## 🔧 Production Notes
+
+- **CORS**: the API only accepts requests from origins listed in `CORS_ORIGINS`
+  (comma-separated). Set it to your real dashboard URL in production — it
+  defaults to the local dev origins and is never the wildcard when credentials
+  are enabled.
+- **Secrets**: always set a strong `SECRET_KEY`. The shipped default must be
+  overridden before any deployment.
+- **Observability**: a Prometheus `/metrics` endpoint exposes `asc_workflows_total`
+  and `asc_agents_total` gauges; point Prometheus at it (see
+  `infrastructure/prometheus.yml`).
+- **Database & memory**: Postgres, Redis, Qdrant, and Neo4j are optional. When
+  unavailable the platform degrades gracefully (in-memory users, in-memory
+  workflow state, in-memory vector/graph memory) so it still runs for local demos.
+- **Background workflows**: `POST /api/v1/workflows/background` runs the pipeline
+  in a Celery worker; its state is persisted and visible to the API/dashboard.
+
+---
 
 MIT License - see [LICENSE](LICENSE) file for details.
 

@@ -92,6 +92,7 @@ class WorkflowStatus(BaseModel):
     status: str
     current_agent: Optional[AgentRole] = None
     progress: float = 0.0
+    error: Optional[str] = None
     messages: list[AgentMessage] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime

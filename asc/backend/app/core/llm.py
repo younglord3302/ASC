@@ -62,6 +62,11 @@ class LLMClient:
         ``usage`` is a dict with ``prompt_tokens``, ``completion_tokens`` and
         ``total_tokens`` keys (zeros if the provider omits usage information).
         """
+        if not self.api_key:
+            raise RuntimeError(
+                "LLM_API_KEY is not configured. Set QWEN_API_KEY (or pass "
+                "api_key=...) so the agent can call the model."
+            )
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -93,6 +98,11 @@ class LLMClient:
         temperature: float = 0.7,
     ) -> dict:
         """Send a chat completion request with tool calling support."""
+        if not self.api_key:
+            raise RuntimeError(
+                "LLM_API_KEY is not configured. Set QWEN_API_KEY (or pass "
+                "api_key=...) so the agent can call the model."
+            )
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -115,6 +125,11 @@ class LLMClient:
 
     async def generate_embedding(self, text: str) -> list[float]:
         """Generate an embedding vector for the given text."""
+        if not self.api_key:
+            raise RuntimeError(
+                "LLM_API_KEY is not configured. Set QWEN_API_KEY (or pass "
+                "api_key=...) so the agent can call the model."
+            )
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",

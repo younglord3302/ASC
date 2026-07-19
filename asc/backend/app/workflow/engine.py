@@ -88,13 +88,13 @@ class WorkflowEngine:
 
         # Recall prior context (user preferences, past stack choices) so the
         # company learns across projects, then feed it to the CEO.
+        prior_context_text: Optional[str] = None
         try:
             prior_context = await memory_system.recall(
                 f"preferred stack for: {user_prompt}", semantic=True
             )
             if prior_context:
-                ctx_text = "\n".join(m.content for m in prior_context[:5])
-                self.workflows[workflow_id]["context"] = ctx_text
+                prior_context_text = "\n".join(m.content for m in prior_context[:5])
         except Exception:
             # Memory recall is best-effort; never block the pipeline.
             pass
@@ -115,6 +115,7 @@ class WorkflowEngine:
             "created_at": datetime.utcnow(),
             "updated_at": datetime.utcnow(),
             "outputs": {},
+            "context": prior_context_text,
         }
         self.messages[workflow_id] = []
         self.cost_metrics[workflow_id] = CostMetrics()
@@ -346,9 +347,18 @@ class WorkflowEngine:
         return await self.get_workflow_status(workflow_id)
 
     async def get_workflow_status(self, workflow_id: str) -> WorkflowStatus:
-        """Get the current status of a workflow."""
+        """Get the current status of a workflow.
+
+        Workflows run by a separate process (e.g. the Celery worker) are not in
+        this engine's in-memory store, but their state is persisted to the
+        database. When the id is unknown locally we fall back to the DB so the
+        API/dashboard can still report on background (autonomous) workflows.
+        """
         wf = self.workflows.get(workflow_id)
         if not wf:
+            status = await self._load_status_from_db(workflow_id)
+            if status is not None:
+                return status
             raise ValueError("Workflow not found")
         return WorkflowStatus(
             workflow_id=wf["id"],
@@ -356,10 +366,44 @@ class WorkflowEngine:
             status=wf["state"].value,
             current_agent=wf.get("current_agent"),
             progress=wf["progress"],
+            error=wf.get("error"),
             messages=self.messages.get(workflow_id, []),
             created_at=wf["created_at"],
             updated_at=wf["updated_at"],
         )
+
+    async def _load_status_from_db(self, workflow_id: str) -> Optional[WorkflowStatus]:
+        """Best-effort reconstruction of a WorkflowStatus from Postgres.
+
+        Returns None if the database is unavailable or the row does not exist.
+        Only the durable fields are recovered (state/progress/timestamps/error);
+        transcript and outputs are intentionally omitted because they live in
+        the owning process's memory.
+        """
+        try:
+            from sqlalchemy import select
+
+            from app.models.db_session import SessionLocal
+            from app.models.database import WorkflowModel
+
+            async with SessionLocal() as session:
+                row = await session.get(WorkflowModel, workflow_id)
+                if row is None:
+                    return None
+                return WorkflowStatus(
+                    workflow_id=row.id,
+                    project_name=row.project_name,
+                    status=row.state.value if isinstance(row.state, WorkflowState) else row.state,
+                    current_agent=row.current_agent,
+                    progress=row.progress,
+                    error=row.error,
+                    messages=[],
+                    created_at=row.created_at,
+                    updated_at=row.updated_at,
+                )
+        except Exception:
+            # Database unreachable or row missing -> caller treats as not found.
+            return None
 
     async def deploy_workflow(self, workflow_id: str) -> dict:
         """Simulate deploying a completed workflow (no real cloud creds needed).

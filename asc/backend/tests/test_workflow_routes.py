@@ -55,9 +55,18 @@ def test_deploy_rejects_non_completed_workflow(mock_llm):
     from app.models.schemas import WorkflowMode
 
     async def _start():
-        return (await workflow_engine.start_workflow(
-            "Build an app", mode=WorkflowMode.AUTONOMOUS
-        )).workflow_id
+        status = await workflow_engine.start_workflow(
+            "Build an app", mode=WorkflowMode.APPROVAL
+        )
+        wid = status.workflow_id
+        # Approval mode pauses at the PRD gate (no full pipeline runs), so the
+        # workflow stays non-completed without leaving a dangling background task.
+        for _ in range(1000):
+            s = await workflow_engine.get_workflow_status(wid)
+            if s.status in {"waiting_approval", "failed"}:
+                break
+            await asyncio.sleep(0.01)
+        return wid
 
     wid = asyncio.new_event_loop().run_until_complete(_start())
     with TestClient(app) as client:
