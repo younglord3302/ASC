@@ -163,6 +163,18 @@ async def get_workflow_messages(workflow_id: str):
     }
 
 
+@router.post("/workflows/{workflow_id}/deploy")
+async def deploy_workflow(
+    workflow_id: str,
+    current_user: UserResponse = Depends(get_current_user),
+):
+    """Deploy a completed workflow (simulated)."""
+    try:
+        return await workflow_engine.deploy_workflow(workflow_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 # ─── Agent Endpoints ─────────────────────────────────────────────────────────
 
 @router.get("/agents")
@@ -289,14 +301,26 @@ async def dashboard_costs():
 
 @router.get("/dashboard/deployment")
 async def dashboard_deployment():
-    """Get deployment status for the dashboard."""
+    """Get deployment status across all workflows for the dashboard."""
+    prod = None
+    staging = None
+    last = None
+    for wf in workflow_engine.workflows.values():
+        for d in wf.get("deployments", []):
+            if d.get("env") == "production":
+                prod = d
+            elif d.get("env") == "staging":
+                staging = d
+            if d.get("deployed_at"):
+                if last is None or d["deployed_at"] > last:
+                    last = d["deployed_at"]
     return {
-        "build_status": "idle",
-        "production_url": None,
-        "staging_url": None,
-        "health": "healthy",
-        "last_deployed": None,
-        "rollback_available": False,
+        "build_status": "deployed" if prod else "idle",
+        "production_url": prod.get("url") if prod else None,
+        "staging_url": staging.get("url") if staging else None,
+        "health": (prod or {}).get("health", "unknown"),
+        "last_deployed": last.isoformat() if last else None,
+        "rollback_available": staging is not None,
     }
 
 

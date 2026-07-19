@@ -46,3 +46,94 @@ def test_messages_returns_transcript(mock_llm):
         assert len(body["messages"]) >= 13
         first = body["messages"][0]
         assert "from" in first and "type" in first and "content" in first
+
+
+def test_deploy_rejects_non_completed_workflow(mock_llm):
+    """Deploying a not-yet-completed workflow is rejected (400)."""
+    from app.main import app
+    from app.workflow.engine import workflow_engine
+    from app.models.schemas import WorkflowMode
+
+    async def _start():
+        return (await workflow_engine.start_workflow(
+            "Build an app", mode=WorkflowMode.AUTONOMOUS
+        )).workflow_id
+
+    wid = asyncio.new_event_loop().run_until_complete(_start())
+    with TestClient(app) as client:
+        # A freshly started workflow is still pending, not completed.
+        client.post(
+            "/api/v1/auth/register",
+            json={"email": "deployer@asc.io", "password": "secret123"},
+        )
+        tok = client.post(
+            "/api/v1/auth/login",
+            json={"email": "deployer@asc.io", "password": "secret123"},
+        ).json()["access_token"]
+        resp = client.post(
+            f"/api/v1/workflows/{wid}/deploy",
+            headers={"Authorization": f"Bearer {tok}"},
+        )
+        assert resp.status_code == 400
+
+
+def test_deploy_completed_workflow_succeeds(mock_llm):
+    """Deploying a completed workflow records a production deploy."""
+    from app.main import app
+    from app.workflow.engine import workflow_engine, WorkflowState
+    from app.models.schemas import WorkflowMode
+
+    async def _mark_done():
+        status = await workflow_engine.start_workflow(
+            "Build a deployable app", mode=WorkflowMode.AUTONOMOUS
+        )
+        wid = status.workflow_id
+        for _ in range(6000):
+            if workflow_engine.workflows[wid]["state"] == WorkflowState.COMPLETED:
+                break
+            await asyncio.sleep(0.01)
+        return wid
+
+    wid = asyncio.new_event_loop().run_until_complete(_mark_done())
+    with TestClient(app) as client:
+        client.post(
+            "/api/v1/auth/register",
+            json={"email": "deployer2@asc.io", "password": "secret123"},
+        )
+        tok = client.post(
+            "/api/v1/auth/login",
+            json={"email": "deployer2@asc.io", "password": "secret123"},
+        ).json()["access_token"]
+        resp = client.post(
+            f"/api/v1/workflows/{wid}/deploy",
+            headers={"Authorization": f"Bearer {tok}"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["deployments"][0]["env"] == "production"
+
+        dep = client.get("/api/v1/dashboard/deployment").json()
+        assert dep["build_status"] == "deployed"
+        assert dep["production_url"]
+
+
+def test_dashboard_deployment_aggregates():
+    """The deployment dashboard reads live deployment state."""
+    from app.main import app
+    from app.workflow.engine import workflow_engine, WorkflowState
+    from app.models.schemas import WorkflowMode
+
+    async def _mark_done():
+        status = await workflow_engine.start_workflow(
+            "Build a deployable app", mode=WorkflowMode.AUTONOMOUS
+        )
+        wid = status.workflow_id
+        wf = workflow_engine.workflows[wid]
+        wf["state"] = WorkflowState.COMPLETED
+        wf.setdefault("deployments", [])
+        return wid
+
+    wid = asyncio.new_event_loop().run_until_complete(_mark_done())
+    with TestClient(app) as client:
+        resp = client.get("/api/v1/dashboard/deployment")
+        assert resp.status_code == 200
+        assert "build_status" in resp.json()

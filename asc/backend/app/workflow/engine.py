@@ -361,6 +361,48 @@ class WorkflowEngine:
             updated_at=wf["updated_at"],
         )
 
+    async def deploy_workflow(self, workflow_id: str) -> dict:
+        """Simulate deploying a completed workflow (no real cloud creds needed).
+
+        Records a deployment entry per environment so the dashboard can show
+        build status, health, and rollback availability. Real Alibaba Cloud
+        deployment would replace the simulated push here.
+        """
+        wf = self.workflows.get(workflow_id)
+        if not wf:
+            raise ValueError("Workflow not found")
+        if wf["state"] != WorkflowState.COMPLETED:
+            raise ValueError("Only completed workflows can be deployed")
+        now = datetime.utcnow()
+        deployments = wf.setdefault("deployments", [])
+        # Promote the previous production deploy to staging (rollback target).
+        for d in deployments:
+            if d.get("env") == "production":
+                d["env"] = "staging"
+        entry = {
+            "env": "production",
+            "status": "deployed",
+            "url": f"https://{wf['id'][:8]}.asc.app",
+            "deployed_at": now,
+            "health": "healthy",
+        }
+        deployments.append(entry)
+        wf["updated_at"] = now
+        await persistence.save_workflow(wf)
+        return {
+            "workflow_id": workflow_id,
+            "deployments": [
+                {
+                    "env": d["env"],
+                    "status": d["status"],
+                    "url": d.get("url"),
+                    "health": d.get("health"),
+                    "deployed_at": d["deployed_at"].isoformat(),
+                }
+                for d in deployments
+            ],
+        }
+
     async def get_workflow_graph(self, workflow_id: str) -> WorkflowGraph:
         """Get the workflow execution graph (DAG)."""
         wf = self.workflows.get(workflow_id)

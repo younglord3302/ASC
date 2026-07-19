@@ -2,6 +2,9 @@
 
 import { useState, useEffect, useCallback } from "react";
 import {
+  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
+} from "recharts";
+import {
   Play,
   Square,
   Activity,
@@ -201,9 +204,13 @@ export default function Dashboard() {
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [prompt, setPrompt] = useState("");
   const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<"agents" | "workflows" | "memory">("agents");
+  const [activeTab, setActiveTab] = useState<"agents" | "workflows" | "memory" | "costs" | "deployment">("agents");
   const [memoryStats, setMemoryStats] = useState<any>(null);
   const [costData, setCostData] = useState<any>(null);
+  const [deploymentData, setDeploymentData] = useState<any>(null);
+  const [selectedWfForDeploy, setSelectedWfForDeploy] = useState<string | null>(null);
+  const [deployLoading, setDeployLoading] = useState(false);
+  const [deployMsg, setDeployMsg] = useState<string | null>(null);
 
   // Memory Explorer: semantic/keyword search + knowledge-graph traversal.
   const [memQuery, setMemQuery] = useState("");
@@ -273,18 +280,43 @@ export default function Dashboard() {
 
   const fetchData = useCallback(async () => {
     try {
-      const [agentsData, workflowsData, costData] = await Promise.all([
+      const [agentsData, workflowsData, costData, deploymentData] = await Promise.all([
         apiGet("/dashboard/agents"),
         apiGet("/dashboard/workflows"),
         apiGet("/dashboard/costs"),
+        apiGet("/dashboard/deployment"),
       ]);
       setAgents(agentsData);
       setWorkflows(workflowsData);
       setCostData(costData);
+      setDeploymentData(deploymentData);
     } catch (err) {
       console.error("Failed to fetch dashboard data:", err);
     }
   }, []);
+
+  const fetchDeployment = useCallback(async () => {
+    try {
+      setDeploymentData(await apiGet("/dashboard/deployment"));
+    } catch (err) {
+      console.error("Failed to fetch deployment:", err);
+    }
+  }, []);
+
+  const deploy = useCallback(async (workflowId: string) => {
+    setDeployLoading(true);
+    setDeployMsg(null);
+    try {
+      const data = await apiPost(`/workflows/${workflowId}/deploy`);
+      setDeployMsg(`Deployed to ${data.deployments?.[0]?.url ?? "production"}`);
+      await fetchDeployment();
+    } catch (err: any) {
+      setDeployMsg(err?.message || "Deploy failed");
+    } finally {
+      setDeployLoading(false);
+      setSelectedWfForDeploy(null);
+    }
+  }, [fetchDeployment]);
 
   const fetchMemoryStats = useCallback(async () => {
     try {
@@ -524,6 +556,8 @@ export default function Dashboard() {
             { id: "agents", label: "Agent Panel", icon: Users },
             { id: "workflows", label: "Workflows", icon: GitBranch },
             { id: "memory", label: "Memory Explorer", icon: Database },
+            { id: "costs", label: "Cost Dashboard", icon: BarChart3 },
+            { id: "deployment", label: "Deployment", icon: Globe },
           ].map((tab) => {
             const Icon = tab.icon;
             return (
@@ -754,6 +788,124 @@ export default function Dashboard() {
             </div>
           </div>
         )}
+
+        {activeTab === "costs" && (
+          <div className="space-y-6">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <div className="bg-white rounded-xl border border-surface-200 p-4">
+                <p className="text-2xl font-bold">{costData?.total_tokens?.toLocaleString() || 0}</p>
+                <p className="text-xs text-surface-500">Total Tokens</p>
+              </div>
+              <div className="bg-white rounded-xl border border-surface-200 p-4">
+                <p className="text-2xl font-bold">{costData?.total_cost ? `$${costData.total_cost.toFixed(4)}` : "$0.0000"}</p>
+                <p className="text-xs text-surface-500">Estimated Cost</p>
+              </div>
+              <div className="bg-white rounded-xl border border-surface-200 p-4">
+                <p className="text-2xl font-bold">{costData?.api_calls || 0}</p>
+                <p className="text-xs text-surface-500">API Calls</p>
+              </div>
+              <div className="bg-white rounded-xl border border-surface-200 p-4">
+                <p className="text-2xl font-bold">{costData?.workflow_count || 0}</p>
+                <p className="text-xs text-surface-500">Workflows</p>
+              </div>
+            </div>
+
+            <div className="bg-white rounded-xl border border-surface-200 p-6">
+              <h3 className="font-semibold mb-1">Token Usage by Agent</h3>
+              <p className="text-sm text-surface-500 mb-4">Where the LLM spend goes across the agent society.</p>
+              {costData?.by_agent && Object.keys(costData.by_agent).length > 0 ? (
+                <div className="h-80">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={Object.entries(costData.by_agent).map(([role, s]: [string, any]) => ({
+                      role: (AGENT_META[role]?.label || role).replace(/\s+/g, "\n"),
+                      tokens: s.tokens,
+                      cost: Number(s.cost.toFixed(4)),
+                    }))}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#eee" />
+                      <XAxis dataKey="role" tick={{ fontSize: 10 }} interval={0} />
+                      <YAxis tick={{ fontSize: 10 }} />
+                      <Tooltip />
+                      <Bar dataKey="tokens" fill="#6366f1" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              ) : (
+                <p className="text-sm text-surface-400">No usage yet — run a workflow to see agent token costs.</p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {activeTab === "deployment" && (
+          <div className="space-y-6">
+            <div className="bg-white rounded-xl border border-surface-200 p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="font-semibold">Deployment Status</h3>
+                <span className={`px-3 py-1 rounded-full text-sm font-medium ${
+                  deploymentData?.build_status === "deployed"
+                    ? "bg-green-100 text-green-800"
+                    : "bg-surface-100 text-surface-600"
+                }`}>
+                  {deploymentData?.build_status === "deployed" ? "Deployed" : "Idle"}
+                </span>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                  <p className="text-xs text-surface-500 mb-1">Production</p>
+                  {deploymentData?.production_url ? (
+                    <a href={deploymentData.production_url} target="_blank" rel="noreferrer"
+                       className="text-sm text-primary-600 hover:underline break-all">
+                      {deploymentData.production_url}
+                    </a>
+                  ) : <p className="text-sm text-surface-400">—</p>}
+                </div>
+                <div>
+                  <p className="text-xs text-surface-500 mb-1">Staging (rollback)</p>
+                  {deploymentData?.staging_url ? (
+                    <a href={deploymentData.staging_url} target="_blank" rel="noreferrer"
+                       className="text-sm text-primary-600 hover:underline break-all">
+                      {deploymentData.staging_url}
+                    </a>
+                  ) : <p className="text-sm text-surface-400">—</p>}
+                </div>
+                <div>
+                  <p className="text-xs text-surface-500 mb-1">Health</p>
+                  <p className="text-sm text-surface-700 capitalize">{deploymentData?.health || "unknown"}</p>
+                </div>
+              </div>
+              {deployMsg && (
+                <p className="text-sm text-green-600 mt-4">{deployMsg}</p>
+              )}
+            </div>
+
+            <div className="bg-white rounded-xl border border-surface-200 p-6">
+              <h3 className="font-semibold mb-1">Deploy a Completed Workflow</h3>
+              <p className="text-sm text-surface-500 mb-4">
+                Select a completed project to deploy (simulated push to production).
+              </p>
+              {workflows.filter((w) => w.status === "completed").length === 0 ? (
+                <p className="text-sm text-surface-400">No completed workflows to deploy yet.</p>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {workflows.filter((w) => w.status === "completed").map((w) => (
+                    <button
+                      key={w.id}
+                      onClick={() => deploy(w.id)}
+                      disabled={deployLoading}
+                      className="px-3 py-2 bg-primary-600 text-white rounded-lg text-sm font-medium hover:bg-primary-700 disabled:opacity-50"
+                    >
+                      {deployLoading && selectedWfForDeploy === w.id ? (
+                        <Loader2 className="w-4 h-4 inline animate-spin mr-1" />
+                      ) : <Globe className="w-4 h-4 inline mr-1" />}
+                      {w.project_name}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
       </main>
     </div>
   );
